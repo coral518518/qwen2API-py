@@ -39,10 +39,10 @@ image = (
     cpu=0.3,
     memory=1024,
     timeout=200, # 200秒超时限制
-    container_idle_timeout=120,
+    scaledown_window=120,
     secrets=[modal.Secret.from_name("qwen")],
-    allow_concurrent_inputs=20, # 允许一个容器处理 100 个并发，提高利用率
 )
+@modal.concurrent(max_inputs=20)
 @modal.asgi_app()
 def serve():
     # Make sure we add /workspace into the python module resolution path
