@@ -1,0 +1,3 @@
+name: qwen2api 
+port: 7860  # 你 FastAPI 监听的端口
+dockerfile: Dockerfile  # 指向你本地的 Dockerfile
