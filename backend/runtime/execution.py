@@ -349,6 +349,7 @@ async def collect_completion_run(
     capture_events: bool = True,
     on_delta: Callable[[dict[str, Any], str | None, list[dict[str, Any]] | None], Awaitable[None]] | None = None,
 ) -> RuntimeExecutionResult:
+    # --- 初始化流式状态 ---
     chat_id = None
     acc = None
     answer_fragments: list[str] = []
@@ -459,6 +460,7 @@ async def collect_completion_run(
         )
         return RuntimeExecutionResult(state=state, chat_id=chat_id, acc=acc)
 
+    # 核心循环：从上游执行器获取流式事件
     async for item in client.chat_stream_events_with_retry(
         request.resolved_model,
         prompt,
@@ -466,8 +468,12 @@ async def collect_completion_run(
         files=getattr(request, "upstream_files", None),
         fixed_account=getattr(request, "bound_account", None),
         existing_chat_id=getattr(request, "upstream_chat_id", None),
+        thinking_enabled=request.thinking_enabled,
+        thinking_mode=request.thinking_mode,
+        thinking_format=request.thinking_format,
     ):
         if item.get("type") == "meta":
+            # 拿到上游生成的 chat_id 和所选账号
             chat_id = item.get("chat_id")
             acc = item.get("acc")
             update_request_context(chat_id=chat_id)
@@ -479,12 +485,14 @@ async def collect_completion_run(
         evt = item.get("event", {})
         if capture_events:
             raw_events.append(evt)
+        # 仅处理 delta 类型的数据（增量文本或工具调用）
         if evt.get("type") != "delta":
             continue
 
         phase = evt.get("phase", "")
         content = evt.get("content", "")
 
+        # 处理思考过程 (Reasoning/Thinking)
         if phase in ("think", "thinking_summary") and content:
             reasoning_fragments.append(content)
             emitted_visible_output = True
@@ -495,6 +503,7 @@ async def collect_completion_run(
                 await on_delta(evt, content, None)
             continue
 
+        # 处理正式回复内容 (Answer)
         if phase == "answer" and content:
             answer_fragments.append(content)
             emitted_visible_output = True
@@ -502,12 +511,12 @@ async def collect_completion_run(
                 metrics.mark("first_event", float(len(raw_events)))
                 first_event_marked = True
 
-            # Tool Sieve 实时检测
+            # Tool Sieve 实时检测：在文本输出过程中实时拦截工具调用
             if tool_sieve:
                 sieve_events = tool_sieve.process_chunk(content)
                 for sieve_evt in sieve_events:
                     if sieve_evt.get("type") == "tool_calls":
-                        # 检测到工具调用！
+                        # 检测到工具调用！立即中断当前流并进入工具执行流程
                         calls = sieve_evt.get("calls", [])
                         if calls:
                             import uuid
@@ -526,6 +535,7 @@ async def collect_completion_run(
 
             if on_delta is not None:
                 await on_delta(evt, content, None)
+            # 同时也检查文本中是否包含传统的 ##TOOL_CALL## 标记
             if request.tools:
                 answer_text = "".join(answer_fragments)
                 if len(answer_fragments) % 3 == 0 or "does not exist" in content.lower():

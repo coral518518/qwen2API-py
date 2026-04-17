@@ -67,6 +67,9 @@ async def lifespan(app: FastAPI):
 
     with request_context(surface="shutdown"):
         log.info("正在关闭网关服务...")
+        if hasattr(app.state, "qwen_client"):
+            await app.state.qwen_client.close()
+            log.info("Qwen 共享 HTTP 客户端已关闭。")
 
 app = FastAPI(title="qwen2API Enterprise Gateway", version="2.0.0", lifespan=lifespan)
 

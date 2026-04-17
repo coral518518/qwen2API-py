@@ -102,10 +102,17 @@ class OpenAIStreamTranslator:
         self.pending_chunks = [chunk for chunk in self.pending_chunks if id(chunk) not in pending_content_ids]
         self.pending_content_chunks = []
 
+    def _emit_reasoning_chunk(self, text_chunk: str) -> None:
+        chunk = (
+            f"data: {json.dumps({'id': self.completion_id, 'object': 'chat.completion.chunk', 'created': self.created, 'model': self.model_name, 'choices': [{'index': 0, 'delta': {'reasoning_content': text_chunk}, 'finish_reason': None}]}, ensure_ascii=False)}\n\n"
+        )
+        self.pending_chunks.append(chunk)
+
     def on_delta(self, evt: dict[str, Any], text_chunk: str | None, tool_calls: list[dict[str, Any]] | None) -> None:
         self._ensure_role_chunk()
 
         if text_chunk and evt.get("phase") in ("think", "thinking_summary"):
+            self._emit_reasoning_chunk(text_chunk)
             return
 
         if text_chunk and evt.get("phase") == "answer":

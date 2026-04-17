@@ -18,6 +18,15 @@ class QwenClient:
         self.account_pool = account_pool
         self.auth_resolver = AuthResolver(account_pool) if account_pool is not None else None
         self.executor = QwenExecutor(self, account_pool)
+        
+        # 共享 HTTP 客户端，实现连接池复用，大幅提升 TTFT
+        self.http_timeout = httpx.Timeout(connect=30.0, read=120.0, write=30.0, pool=30.0)
+        self.client = httpx.AsyncClient(
+            timeout=self.http_timeout,
+            follow_redirects=True,
+            limits=httpx.Limits(max_connections=100, max_keepalive_connections=20),
+            http2=True, # 启用 HTTP2 进一步提升流式性能
+        )
 
     @staticmethod
     def _build_headers(token: str) -> dict[str, str]:
@@ -32,14 +41,14 @@ class QwenClient:
             "Content-Type": "application/json",
         }
 
-    async def _request_json(self, method: str, path: str, token: str, body: dict | None = None, timeout: float = 30.0) -> dict:
-        async with httpx.AsyncClient(timeout=timeout, follow_redirects=True) as hc:
-            resp = await hc.request(
-                method,
-                f"{BASE_URL}{path}",
-                headers=self._build_headers(token),
-                json=body,
-            )
+    async def _request_json(self, method: str, path: str, token: str, body: dict | None = None, timeout: float | None = None) -> dict:
+        resp = await self.client.request(
+            method,
+            f"{BASE_URL}{path}",
+            headers=self._build_headers(token),
+            json=body,
+            timeout=timeout if timeout is not None else self.http_timeout,
+        )
         return {"status": resp.status_code, "body": resp.text}
 
     async def create_chat(self, token: str, model: str, chat_type: str = "t2t") -> str:
@@ -65,11 +74,11 @@ class QwenClient:
             return False
 
         try:
-            async with httpx.AsyncClient(timeout=15) as hc:
-                resp = await hc.get(
-                    f"{BASE_URL}/api/v1/auths/",
-                    headers=self._build_headers(token),
-                )
+            resp = await self.client.get(
+                f"{BASE_URL}/api/v1/auths/",
+                headers=self._build_headers(token),
+                timeout=15,
+            )
             if resp.status_code != 200:
                 return False
 
@@ -88,11 +97,11 @@ class QwenClient:
 
     async def list_models(self, token: str) -> list:
         try:
-            async with httpx.AsyncClient(timeout=10) as hc:
-                resp = await hc.get(
-                    f"{BASE_URL}/api/models",
-                    headers=self._build_headers(token),
-                )
+            resp = await self.client.get(
+                f"{BASE_URL}/api/models",
+                headers=self._build_headers(token),
+                timeout=10,
+            )
             if resp.status_code != 200:
                 return []
             try:
@@ -109,8 +118,29 @@ class QwenClient:
     def parse_sse_chunk(self, chunk: str) -> list[dict]:
         return parse_sse_chunk(chunk)
 
-    async def stream(self, token: str, chat_id: str, model: str, content: str, has_custom_tools: bool = False, files: list[dict] | None = None):
-        async for event in self.executor.stream(token, chat_id, model, content, has_custom_tools, files=files):
+    async def stream(
+        self,
+        token: str,
+        chat_id: str,
+        model: str,
+        content: str,
+        has_custom_tools: bool = False,
+        files: list[dict] | None = None,
+        thinking_enabled: bool = True,
+        thinking_mode: str = "Auto",
+        thinking_format: str = "summary",
+    ):
+        async for event in self.executor.stream(
+            token,
+            chat_id,
+            model,
+            content,
+            has_custom_tools,
+            files=files,
+            thinking_enabled=thinking_enabled,
+            thinking_mode=thinking_mode,
+            thinking_format=thinking_format,
+        ):
             yield event
 
     async def stream_chat_once(self, token: str, chat_id: str, payload: dict) -> AsyncIterator[dict]:
@@ -119,21 +149,19 @@ class QwenClient:
         # read: 读取超时120秒（2分钟内没有新数据就超时）
         # write: 写入超时30秒
         # pool: 连接池超时30秒
-        timeout = httpx.Timeout(connect=30.0, read=120.0, write=30.0, pool=30.0)
-        async with httpx.AsyncClient(timeout=timeout) as hc:
-            async with hc.stream(
-                "POST",
-                f"{BASE_URL}/api/v2/chat/completions?chat_id={chat_id}",
-                headers=self._build_headers(token),
-                json=payload,
-            ) as resp:
-                if resp.status_code != 200:
-                    yield {"status": resp.status_code, "body": await resp.aread()}
-                    return
-                async for chunk in resp.aiter_text():
-                    if chunk:
-                        yield {"chunk": chunk}
-                yield {"status": "streamed"}
+        async with self.client.stream(
+            "POST",
+            f"{BASE_URL}/api/v2/chat/completions?chat_id={chat_id}",
+            headers=self._build_headers(token),
+            json=payload,
+        ) as resp:
+            if resp.status_code != 200:
+                yield {"status": resp.status_code, "body": await resp.aread()}
+                return
+            async for chunk in resp.aiter_text():
+                if chunk:
+                    yield {"chunk": chunk}
+            yield {"status": "streamed"}
 
     async def chat_stream_events_with_retry(
         self,
@@ -143,6 +171,9 @@ class QwenClient:
         files: list[dict] | None = None,
         fixed_account=None,
         existing_chat_id: str | None = None,
+        thinking_enabled: bool = True,
+        thinking_mode: str = "Auto",
+        thinking_format: str = "summary",
     ):
         async for item in self.executor.chat_stream_events_with_retry(
             model,
@@ -151,5 +182,12 @@ class QwenClient:
             files=files,
             fixed_account=fixed_account,
             existing_chat_id=existing_chat_id,
+            thinking_enabled=thinking_enabled,
+            thinking_mode=thinking_mode,
+            thinking_format=thinking_format,
         ):
             yield item
+
+    async def close(self):
+        """关闭共享 HTTP 客户端，释放资源。"""
+        await self.client.aclose()

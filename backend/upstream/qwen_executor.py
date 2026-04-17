@@ -57,6 +57,7 @@ class QwenExecutor:
             data = json.loads(body_text)
             if not data.get("success") or "id" not in data.get("data", {}):
                 raise Exception("Qwen API returned error or missing id")
+            # 返回上游生成的 chat_id
             return data["data"]["id"]
         except Exception as e:
             body_lower = body_text.lower()
@@ -85,12 +86,24 @@ class QwenExecutor:
         content: str,
         has_custom_tools: bool = False,
         files: list[dict] | None = None,
+        thinking_enabled: bool = True,
+        thinking_mode: str = "Auto",
+        thinking_format: str = "summary",
     ):
         stream_fn = getattr(self.engine, "stream_chat_once", None) or getattr(self.engine, "fetch_chat", None)
         if stream_fn is None:
             raise Exception("stream transport unavailable")
 
-        payload = build_chat_payload(chat_id, model, content, has_custom_tools, files=files)
+        payload = build_chat_payload(
+            chat_id,
+            model,
+            content,
+            has_custom_tools,
+            files=files,
+            thinking_enabled=thinking_enabled,
+            thinking_mode=thinking_mode,
+            thinking_format=thinking_format,
+        )
         buffer = ""
         started_at = time.perf_counter()
         first_event_logged = False
@@ -122,13 +135,14 @@ class QwenExecutor:
 
                 if "chunk" in chunk_result:
                     buffer += chunk_result["chunk"]
+                    # SSE 协议解析逻辑：按 \n\n 分隔事件
                     while "\n\n" in buffer:
                         msg, buffer = buffer.split("\n\n", 1)
                         for evt in parse_sse_chunk(msg):
                             if not first_event_logged:
                                 first_event_logged = True
                                 log.info(
-                                    f"[Executor] first parsed event after {(time.perf_counter() - started_at):.3f}s chat_id={chat_id}"
+                                    f"[Executor] first event received! (TTFT: {(time.perf_counter() - started_at):.3f}s) chat_id={chat_id}"
                                 )
                             yield evt
         except Exception as e:
@@ -160,6 +174,9 @@ class QwenExecutor:
         files: list[dict] | None = None,
         fixed_account=None,
         existing_chat_id: str | None = None,
+        thinking_enabled: bool = True,
+        thinking_mode: str = "Auto",
+        thinking_format: str = "summary",
     ):
         exclude = set()
         if fixed_account is not None:
@@ -167,34 +184,63 @@ class QwenExecutor:
             acc = fixed_account
             try:
                 log.info(f"[Executor] using fixed account={acc.email} model={model}")
+                # A. 创建会话 (耗时 RTT 1)
                 chat_id = existing_chat_id or await self.create_chat(acc.token, model)
                 update_request_context(chat_id=chat_id)
                 if existing_chat_id:
                     log.info(f"[Executor] reusing chat_id={chat_id} account={acc.email}")
                 else:
                     log.info(f"[Executor] created chat_id={chat_id} account={acc.email}")
+                
+                # B. 发送首帧 Meta 信息
                 yield {"type": "meta", "chat_id": chat_id, "acc": acc}
-                async for evt in self.stream(acc.token, chat_id, model, content, has_custom_tools, files=files):
+                
+                # C. 开始流式请求 (耗时 RTT 2+)
+                async for evt in self.stream(
+                    acc.token,
+                    chat_id,
+                    model,
+                    content,
+                    has_custom_tools,
+                    files=files,
+                    thinking_enabled=thinking_enabled,
+                    thinking_mode=thinking_mode,
+                    thinking_format=thinking_format,
+                ):
                     yield {"type": "event", "event": evt}
                 return
             except Exception:
                 self.account_pool.release(acc)
                 raise
 
+        # 如果没有指定账号，则尝试从账号池获取 (Retry 模式)
         for attempt in range(settings.MAX_RETRIES):
             update_request_context(upstream_attempt=attempt + 1)
+            # D. 从号池抢占账号 (可能阻塞)
             acc = await self.account_pool.acquire_wait(timeout=60, exclude=exclude)
             if not acc:
                 raise Exception("No available accounts in pool (all busy or rate limited)")
 
             try:
                 log.info(f"[Executor] acquired account={acc.email} model={model} attempt={attempt + 1}")
+                # E. 上游会话创建
                 chat_id = await self.create_chat(acc.token, model)
                 update_request_context(chat_id=chat_id)
                 log.info(f"[Executor] created chat_id={chat_id} account={acc.email}")
                 yield {"type": "meta", "chat_id": chat_id, "acc": acc}
 
-                async for evt in self.stream(acc.token, chat_id, model, content, has_custom_tools, files=files):
+                # F. 开启流式通道
+                async for evt in self.stream(
+                    acc.token,
+                    chat_id,
+                    model,
+                    content,
+                    has_custom_tools,
+                    files=files,
+                    thinking_enabled=thinking_enabled,
+                    thinking_mode=thinking_mode,
+                    thinking_format=thinking_format,
+                ):
                     yield {"type": "event", "event": evt}
                 return
 

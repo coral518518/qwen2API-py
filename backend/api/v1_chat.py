@@ -56,6 +56,7 @@ async def chat_completions(request: Request):
     users_db = app.state.users_db
     client: QwenClient = app.state.qwen_client
 
+    # 1. 解析鉴权信息与用户配额
     auth = await resolve_auth_context(request, users_db)
     token = auth.token
 
@@ -64,15 +65,22 @@ async def chat_completions(request: Request):
     except Exception:
         raise HTTPException(400, {"error": {"message": "Invalid JSON body", "type": "invalid_request_error"}})
 
+    # 2. 识别客户端配置内容 (例如是否是 Claude Code 或 OpenClaw)
     client_profile = _detect_openai_client_profile(request, req_data)
+    # 3. 处理文件附件逻辑
     session_key = derive_session_key("openai", token, req_data)
     original_history_messages = req_data.get("messages", [])
     file_store = getattr(app.state, "file_store", None)
     preprocessed = None
     if file_store is not None:
+        # 预处理 base64 附件并存储到本地文件系统
         preprocessed = await preprocess_attachments(req_data, file_store, owner_token=token)
         req_data = preprocessed.payload
+    
+    # 4. 上下文准备与附件上传
+    # 如果对话过长，会触发离线策略（将上下文转换为文件上传到上游）
     context_prepared = await prepare_context_attachments(app=app, payload=req_data, surface="openai", auth_token=token, client_profile=client_profile, existing_attachments=(preprocessed.attachments if preprocessed is not None else None))
+    # 5. 构建标准化请求对象
     req_data = context_prepared["payload"]
     standard_request = _build_standard_request(req_data, client_profile=client_profile)
     if preprocessed is not None:
@@ -84,6 +92,8 @@ async def chat_completions(request: Request):
     standard_request.bound_account_email = context_prepared["bound_account_email"]
     standard_request.bound_account = context_prepared["bound_account"]
 
+    # 6. 会话持久化规划
+    # 检查当前 Session 是否可以复用上游存在的 chat_id
     session_plan = await plan_persistent_session_turn(app=app, request=standard_request, payload=req_data, surface="openai")
     if session_plan.enabled:
         standard_request.persistent_session = True
@@ -127,11 +137,14 @@ async def chat_completions(request: Request):
             prompt[-500:],
         )
 
+        # --- 流程 A: 流式输出模式 (Stream: True) ---
         if standard_request.stream:
             async def generate():
+                # 使用 Session 锁防止同一会话并发修改导致数据错乱
                 async with app.state.session_locks.hold(session_key):
                     try:
                         update_request_context(stream_attempt=1)
+                        # 初始化 OpenAI 格式翻译器
                         translator = OpenAIStreamTranslator(
                             completion_id=completion_id,
                             created=created,
@@ -147,6 +160,8 @@ async def chat_completions(request: Request):
                         async def on_delta(evt: dict[str, Any], text_chunk: str | None, tool_calls: list[dict[str, Any]] | None) -> None:
                             translator.on_delta(evt, text_chunk, tool_calls)
 
+                        # 执行重试桥接逻辑 (核心执行点)
+                        # 内部会处理账号选择、上游 API 调用和失败重试
                         result = await run_retryable_completion_bridge(
                             client=client,
                             standard_request=standard_request,
@@ -167,6 +182,7 @@ async def chat_completions(request: Request):
                             request=standard_request,
                             directive=directive,
                         )
+                        # 持久化会话状态 (将本次对话结果存入数据库，下次复用)
                         await persist_session_turn(
                             app=app,
                             request=standard_request,
@@ -196,6 +212,7 @@ async def chat_completions(request: Request):
         try:
             async with app.state.session_locks.hold(session_key):
                 update_request_context(stream_attempt=1)
+                # 执行重试桥接逻辑 (核心执行点: 阻塞模式)
                 result = await run_retryable_completion_bridge(
                     client=client,
                     standard_request=standard_request,
@@ -214,6 +231,7 @@ async def chat_completions(request: Request):
                     request=standard_request,
                     directive=directive,
                 )
+                # 持久化会话状态
                 await persist_session_turn(
                     app=app,
                     request=standard_request,
