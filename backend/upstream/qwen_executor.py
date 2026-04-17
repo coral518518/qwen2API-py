@@ -135,9 +135,13 @@ class QwenExecutor:
 
                 if "chunk" in chunk_result:
                     buffer += chunk_result["chunk"]
-                    # SSE 协议解析逻辑：按 \n\n 分隔事件
-                    while "\n\n" in buffer:
-                        msg, buffer = buffer.split("\n\n", 1)
+                    # SSE 协议解析逻辑：寻找 \n\n 双换行符分隔符
+                    while True:
+                        pos = buffer.find("\n\n")
+                        if pos == -1:
+                            break
+                        msg = buffer[:pos]
+                        buffer = buffer[pos+2:] # 跳过 \n\n
                         for evt in parse_sse_chunk(msg):
                             if not first_event_logged:
                                 first_event_logged = True

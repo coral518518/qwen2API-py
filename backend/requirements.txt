@@ -8,3 +8,4 @@ tiktoken
 curl_cffi
 camoufox
 oss2
+h2
