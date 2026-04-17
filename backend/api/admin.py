@@ -144,53 +144,16 @@ async def register_new_account(request: Request):
 
 @router.post("/accounts/sync", dependencies=[Depends(verify_admin)])
 async def sync_accounts(request: Request):
-    import httpx
-    from backend.core.account_pool import AccountPool, Account
+    from backend.core.account_pool import AccountPool
+    from backend.services.account_sync import do_sync_accounts
     
-    try:
-        async with httpx.AsyncClient() as client:
-            resp = await client.get("https://d1.coral001.de5.net/common_data/kvselect/qwen", timeout=15.0)
-            resp.raise_for_status()
-            data = resp.json()
-            
-        if isinstance(data, list) and len(data) > 0:
-            pool: AccountPool = request.app.state.account_pool
-            
-            async with pool._lock:
-                existing_map = {acc.email: acc for acc in pool.accounts}
-                added_count = 0
-                updated_count = 0
-                
-                for d in data:
-                    email = d.get("email")
-                    if not email:
-                        continue
-                    
-                    if email in existing_map:
-                        acc = existing_map[email]
-                        if "password" in d: acc.password = d["password"]
-                        if "token" in d: acc.token = d["token"]
-                        if "cookies" in d: acc.cookies = d["cookies"]
-                        if "username" in d: acc.username = d["username"]
-                        if "status_code" in d: acc.status_code = d["status_code"]
-                        if "activation_pending" in d:
-                            acc.activation_pending = d["activation_pending"]
-                            if d["activation_pending"]:
-                                acc.valid = False
-                        updated_count += 1
-                    else:
-                        pool.accounts.append(Account(**d))
-                        added_count += 1
-                        
-            await pool.save()
-            return {"ok": True, "message": f"同步成功，新增 {added_count} 个，更新 {updated_count} 个账号"}
-        
-        return {"ok": False, "error": "接口未返回有效数据或数组为空"}
-        
-    except httpx.RequestError as e:
-        return {"ok": False, "error": f"请求接口失败: {str(e)}"}
-    except Exception as e:
-        return {"ok": False, "error": f"同步异常: {str(e)}"}
+    pool: AccountPool = request.app.state.account_pool
+    success, msg = await do_sync_accounts(pool)
+    
+    if success:
+        return {"ok": True, "message": msg}
+    else:
+        return {"ok": False, "error": msg}
 
 @router.post("/verify", dependencies=[Depends(verify_admin)])
 async def verify_all_accounts(request: Request):

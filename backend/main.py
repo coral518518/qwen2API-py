@@ -25,6 +25,7 @@ import backend.api.models as models
 from backend.api import admin, v1_chat, probes, anthropic, gemini, embeddings, images, files_api
 from backend.services.garbage_collector import garbage_collect_chats
 from backend.services.context_cleanup import context_cleanup_loop
+from backend.services.account_sync import auto_sync_loop
 
 configure_logging(getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO))
 log = logging.getLogger("qwen2api")
@@ -60,6 +61,7 @@ async def lifespan(app: FastAPI):
         await app.state.upstream_file_cache.load()
         asyncio.create_task(garbage_collect_chats(app))
         asyncio.create_task(context_cleanup_loop(app))
+        asyncio.create_task(auto_sync_loop(app.state.account_pool))
 
     yield
 
