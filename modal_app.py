@@ -62,12 +62,19 @@ def serve():
 def keep_warm():
     import urllib.request
     
-    # 动态获取当前部署的 webhook 地址，不再写死
-    if not serve.web_url:
-        print("未获取到 web_url，可能尚未完全部署。")
+    # 动态获取当前部署的 webhook 地址
+    # 不同 Modal 版本的 API 可能不同，做一层安全获取
+    base_url = None
+    if hasattr(serve, "get_web_url"):
+        base_url = serve.get_web_url()
+    elif hasattr(serve, "web_url"):
+        base_url = serve.web_url
+        
+    if not base_url:
+        print("未获取到 webhook url，请检查 Modal 版本或使用固定 URL。")
         return
         
-    url = f"{serve.web_url.rstrip('/')}/api"
+    url = f"{base_url.rstrip('/')}/api"
     
     try:
         req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
