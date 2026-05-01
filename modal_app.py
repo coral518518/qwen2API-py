@@ -60,5 +60,19 @@ def serve():
 # 注意：Modal 时间通常是 UTC，北京时间 09:00-24:00 对应 
 @app.function(schedule=modal.Cron("*/1 1-16 * * *")) 
 def keep_warm():
-    serve.trigger()
-    print("已触发内部保活...")
+    import urllib.request
+    
+    # 动态获取当前部署的 webhook 地址，不再写死
+    if not serve.web_url:
+        print("未获取到 web_url，可能尚未完全部署。")
+        return
+        
+    url = f"{serve.web_url.rstrip('/')}/api"
+    
+    try:
+        req = urllib.request.Request(url, headers={'User-Agent': 'Mozilla/5.0'})
+        with urllib.request.urlopen(req, timeout=10) as response:
+            response.read()
+        print(f"已触发内部保活... 请求地址: {url}")
+    except Exception as e:
+        print(f"保活请求出现异常 (服务可能仍在唤醒中): {e}")
