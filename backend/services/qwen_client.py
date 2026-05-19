@@ -17,7 +17,9 @@ log = logging.getLogger("qwen2api.client")
 class QwenClient:
     def __init__(self, account_pool: AccountPool):
         self.account_pool = account_pool
-        self.auth_resolver = AuthResolver(account_pool) if account_pool is not None else None
+        self.auth_resolver = (
+            AuthResolver(account_pool) if account_pool is not None else None
+        )
         self.executor = QwenExecutor(self, account_pool)
 
         # HTTP连接池配置（对齐 ds2api 的高性能设置）
@@ -55,7 +57,14 @@ class QwenClient:
             "Content-Type": "application/json",
         }
 
-    async def _request_json(self, method: str, path: str, token: str, body: dict | None = None, timeout: float = 30.0) -> dict:
+    async def _request_json(
+        self,
+        method: str,
+        path: str,
+        token: str,
+        body: dict | None = None,
+        timeout: float = 30.0,
+    ) -> dict:
         resp = await self._http_client.request(
             method,
             f"{BASE_URL}{path}",
@@ -69,10 +78,14 @@ class QwenClient:
         return await self.executor.create_chat(token, model, chat_type=chat_type)
 
     async def delete_chat(self, token: str, chat_id: str):
-        await self._request_json("DELETE", f"/api/v2/chats/{chat_id}", token, timeout=20.0)
+        await self._request_json(
+            "DELETE", f"/api/v2/chats/{chat_id}", token, timeout=20.0
+        )
 
     async def list_chats(self, token: str, limit: int = 50) -> list[dict]:
-        res = await self._request_json("GET", f"/api/v2/chats?limit={limit}", token, timeout=20.0)
+        res = await self._request_json(
+            "GET", f"/api/v2/chats?limit={limit}", token, timeout=20.0
+        )
         if res["status"] != 200:
             return []
         try:
@@ -100,9 +113,16 @@ class QwenClient:
                 data = resp.json()
                 return data.get("role") == "user"
             except Exception as e:
-                log.warning(f"[verify_token] JSON 解析失败（可能被拦截或代理异常）: {e}, status={resp.status_code}, text={resp.text[:100]}")
-                if "aliyun_waf" in resp.text.lower() or "<!doctype" in resp.text.lower():
-                    log.info("[verify_token] 遇到 WAF 拦截页面，放行交给浏览器自动化账号流程处理。")
+                log.warning(
+                    f"[verify_token] JSON 解析失败（可能被拦截或代理异常）: {e}, status={resp.status_code}, text={resp.text[:100]}"
+                )
+                if (
+                    "aliyun_waf" in resp.text.lower()
+                    or "<!doctype" in resp.text.lower()
+                ):
+                    log.info(
+                        "[verify_token] 遇到 WAF 拦截页面，放行交给浏览器自动化账号流程处理。"
+                    )
                     return True
                 return False
         except Exception as e:
@@ -121,7 +141,9 @@ class QwenClient:
             try:
                 return resp.json().get("data", [])
             except Exception as e:
-                log.warning(f"[list_models] JSON 解析失败: {e}, status={resp.status_code}, text={resp.text[:100]}")
+                log.warning(
+                    f"[list_models] JSON 解析失败: {e}, status={resp.status_code}, text={resp.text[:100]}"
+                )
                 return []
         except Exception:
             return []
@@ -135,7 +157,10 @@ class QwenClient:
 
     async def list_models_from_pool(self) -> list[dict]:
         now = time.time()
-        if self._upstream_models_cache and (now - self._upstream_models_fetched_at) < self._UPSTREAM_MODELS_TTL:
+        if (
+            self._upstream_models_cache
+            and (now - self._upstream_models_fetched_at) < self._UPSTREAM_MODELS_TTL
+        ):
             return self._upstream_models_cache
         if self.account_pool is None:
             return []
@@ -156,17 +181,49 @@ class QwenClient:
             if acc is not None:
                 self.account_pool.release(acc)
 
-    def _build_payload(self, chat_id: str, model: str, content: str, has_custom_tools: bool = False, files: list[dict] | None = None) -> dict:
-        return build_chat_payload(chat_id, model, content, has_custom_tools, files=files)
+    def _build_payload(
+        self,
+        chat_id: str,
+        model: str,
+        content: str,
+        has_custom_tools: bool = False,
+        files: list[dict] | None = None,
+    ) -> dict:
+        return build_chat_payload(
+            chat_id, model, content, has_custom_tools, files=files
+        )
 
     def parse_sse_chunk(self, chunk: str) -> list[dict]:
         return parse_sse_chunk(chunk)
 
-    async def stream(self, token: str, chat_id: str, model: str, content: str, has_custom_tools: bool = False, files: list[dict] | None = None):
-        async for event in self.executor.stream(token, chat_id, model, content, has_custom_tools, files=files):
+    async def stream(
+        self,
+        token: str,
+        chat_id: str,
+        model: str,
+        content: str,
+        has_custom_tools: bool = False,
+        files: list[dict] | None = None,
+        thinking_enabled: bool = True,
+        thinking_mode: str = "Auto",
+        thinking_format: str = "summary",
+    ):
+        async for event in self.executor.stream(
+            token,
+            chat_id,
+            model,
+            content,
+            has_custom_tools,
+            files=files,
+            thinking_enabled=thinking_enabled,
+            thinking_mode=thinking_mode,
+            thinking_format=thinking_format,
+        ):
             yield event
 
-    async def stream_chat_once(self, token: str, chat_id: str, payload: dict) -> AsyncIterator[dict]:
+    async def stream_chat_once(
+        self, token: str, chat_id: str, payload: dict
+    ) -> AsyncIterator[dict]:
         # 使用全局连接池，复用连接（对齐 ds2api）
         async with self._http_client.stream(
             "POST",
@@ -191,6 +248,9 @@ class QwenClient:
         files: list[dict] | None = None,
         fixed_account=None,
         existing_chat_id: str | None = None,
+        thinking_enabled: bool = True,
+        thinking_mode: str = "Auto",
+        thinking_format: str = "summary",
     ):
         async for item in self.executor.chat_stream_events_with_retry(
             model,
@@ -199,5 +259,8 @@ class QwenClient:
             files=files,
             fixed_account=fixed_account,
             existing_chat_id=existing_chat_id,
+            thinking_enabled=thinking_enabled,
+            thinking_mode=thinking_mode,
+            thinking_format=thinking_format,
         ):
             yield item
