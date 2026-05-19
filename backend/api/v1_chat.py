@@ -7,13 +7,23 @@ import uuid
 from typing import Any, Awaitable, Callable
 from backend.adapter.standard_request import StandardRequest
 from backend.core.config import settings
-from backend.core.request_logging import new_request_id, request_context, update_request_context
+from backend.core.request_logging import (
+    new_request_id,
+    request_context,
+    update_request_context,
+)
 from backend.services.attachment_preprocessor import preprocess_attachments
-from backend.services.context_attachment_manager import prepare_context_attachments, derive_session_key
+from backend.services.context_attachment_manager import (
+    prepare_context_attachments,
+    derive_session_key,
+)
 from backend.services.auth_quota import resolve_auth_context
 from backend.services.completion_bridge import run_retryable_completion_bridge
 from backend.services.openai_stream_translator import OpenAIStreamTranslator
-from backend.services.prompt_builder import CLAUDE_CODE_OPENAI_PROFILE, OPENCLAW_OPENAI_PROFILE
+from backend.services.prompt_builder import (
+    CLAUDE_CODE_OPENAI_PROFILE,
+    OPENCLAW_OPENAI_PROFILE,
+)
 from backend.services.response_formatters import build_openai_completion_payload
 from backend.services.qwen_client import QwenClient
 from backend.services.standard_request_builder import build_chat_standard_request
@@ -24,11 +34,18 @@ from backend.services.task_session import (
     persist_session_turn,
     plan_persistent_session_turn,
 )
-from backend.runtime.execution import RuntimeAttemptState, build_tool_directive, build_usage_delta_factory, request_max_attempts
+from backend.runtime.execution import (
+    RuntimeAttemptState,
+    build_tool_directive,
+    build_usage_delta_factory,
+    request_max_attempts,
+)
 
 log = logging.getLogger("qwen2api.chat")
 router = APIRouter()
-OpenAIDeltaHandler = Callable[[dict[str, Any], str | None, list[dict[str, Any]] | None], Awaitable[None]]
+OpenAIDeltaHandler = Callable[
+    [dict[str, Any], str | None, list[dict[str, Any]] | None], Awaitable[None]
+]
 
 
 def _detect_openai_client_profile(request: Request, req_data: dict) -> str:
@@ -45,7 +62,11 @@ def _build_standard_request(req_data: dict, *, client_profile: str) -> StandardR
         surface="openai",
         client_profile=client_profile,
     )
-    log.info("[OAI] normalized tools=%s profile=%s", standard_request.tool_names, client_profile)
+    log.info(
+        "[OAI] normalized tools=%s profile=%s",
+        standard_request.tool_names,
+        client_profile,
+    )
     return standard_request
 
 
@@ -63,7 +84,15 @@ async def chat_completions(request: Request):
     try:
         req_data = await request.json()
     except Exception:
-        raise HTTPException(400, {"error": {"message": "Invalid JSON body", "type": "invalid_request_error"}})
+        raise HTTPException(
+            400,
+            {
+                "error": {
+                    "message": "Invalid JSON body",
+                    "type": "invalid_request_error",
+                }
+            },
+        )
 
     # 2. 识别客户端配置内容 (例如是否是 Claude Code 或 OpenClaw)
     client_profile = _detect_openai_client_profile(request, req_data)
@@ -74,12 +103,23 @@ async def chat_completions(request: Request):
     preprocessed = None
     if file_store is not None:
         # 预处理 base64 附件并存储到本地文件系统
-        preprocessed = await preprocess_attachments(req_data, file_store, owner_token=token)
+        preprocessed = await preprocess_attachments(
+            req_data, file_store, owner_token=token
+        )
         req_data = preprocessed.payload
-    
+
     # 4. 上下文准备与附件上传
     # 如果对话过长，会触发离线策略（将上下文转换为文件上传到上游）
-    context_prepared = await prepare_context_attachments(app=app, payload=req_data, surface="openai", auth_token=token, client_profile=client_profile, existing_attachments=(preprocessed.attachments if preprocessed is not None else None))
+    context_prepared = await prepare_context_attachments(
+        app=app,
+        payload=req_data,
+        surface="openai",
+        auth_token=token,
+        client_profile=client_profile,
+        existing_attachments=(
+            preprocessed.attachments if preprocessed is not None else None
+        ),
+    )
     # 5. 构建标准化请求对象
     req_data = context_prepared["payload"]
     standard_request = _build_standard_request(req_data, client_profile=client_profile)
@@ -94,18 +134,31 @@ async def chat_completions(request: Request):
 
     # 6. 会话持久化规划
     # 检查当前 Session 是否可以复用上游存在的 chat_id
-    session_plan = await plan_persistent_session_turn(app=app, request=standard_request, payload=req_data, surface="openai")
+    session_plan = await plan_persistent_session_turn(
+        app=app, request=standard_request, payload=req_data, surface="openai"
+    )
     if session_plan.enabled:
         standard_request.persistent_session = True
         standard_request.full_prompt = session_plan.full_prompt
         standard_request.prompt = session_plan.prompt
         standard_request.session_message_hashes = session_plan.current_hashes
-        standard_request.upstream_chat_id = session_plan.existing_chat_id if session_plan.reuse_chat else None
+        standard_request.upstream_chat_id = (
+            session_plan.existing_chat_id if session_plan.reuse_chat else None
+        )
         if standard_request.bound_account is None and session_plan.account_email:
-            standard_request.bound_account = await app.state.account_pool.acquire_wait_preferred(session_plan.account_email, timeout=60)
+            standard_request.bound_account = (
+                await app.state.account_pool.acquire_wait_preferred(
+                    session_plan.account_email, timeout=60
+                )
+            )
             if standard_request.bound_account is not None:
-                standard_request.bound_account_email = standard_request.bound_account.email
-        elif standard_request.bound_account is not None and not standard_request.bound_account_email:
+                standard_request.bound_account_email = (
+                    standard_request.bound_account.email
+                )
+        elif (
+            standard_request.bound_account is not None
+            and not standard_request.bound_account_email
+        ):
             standard_request.bound_account_email = standard_request.bound_account.email
         if standard_request.upstream_chat_id and standard_request.bound_account is None:
             log_session_plan_reuse_cancelled(
@@ -114,7 +167,9 @@ async def chat_completions(request: Request):
                 reason="missing_bound_account",
             )
             standard_request.upstream_chat_id = None
-            standard_request.prompt = standard_request.full_prompt or standard_request.prompt
+            standard_request.prompt = (
+                standard_request.full_prompt or standard_request.prompt
+            )
 
     model_name = standard_request.response_model
     qwen_model = standard_request.resolved_model
@@ -125,20 +180,26 @@ async def chat_completions(request: Request):
     completion_id = f"chatcmpl-{uuid.uuid4().hex[:12]}"
     created = int(time.time())
 
-    with request_context(req_id=new_request_id(), surface="openai", requested_model=model_name, resolved_model=qwen_model):
+    with request_context(
+        req_id=new_request_id(),
+        surface="openai",
+        requested_model=model_name,
+        resolved_model=qwen_model,
+    ):
         log.info(
             "[OAI] model=%s stream=%s tool_enabled=%s profile=%s tools=%s prompt_len=%s prompt_tail=%r",
             qwen_model,
             standard_request.stream,
             standard_request.tool_enabled,
             standard_request.client_profile,
-            [t.get('name') for t in tools],
+            [t.get("name") for t in tools],
             len(prompt),
             prompt[-500:],
         )
 
         # --- 流程 A: 流式输出模式 (Stream: True) ---
         if standard_request.stream:
+
             async def generate():
                 # 使用 Session 锁防止同一会话并发修改导致数据错乱
                 async with app.state.session_locks.hold(session_key):
@@ -150,14 +211,20 @@ async def chat_completions(request: Request):
                             created=created,
                             model_name=model_name,
                             client_profile=standard_request.client_profile,
-                            build_final_directive=lambda answer_text: build_tool_directive(
-                                standard_request,
-                                RuntimeAttemptState(answer_text=answer_text),
+                            build_final_directive=lambda answer_text: (
+                                build_tool_directive(
+                                    standard_request,
+                                    RuntimeAttemptState(answer_text=answer_text),
+                                )
                             ),
                             allowed_tool_names=standard_request.tool_names,
                         )
 
-                        async def on_delta(evt: dict[str, Any], text_chunk: str | None, tool_calls: list[dict[str, Any]] | None) -> None:
+                        async def on_delta(
+                            evt: dict[str, Any],
+                            text_chunk: str | None,
+                            tool_calls: list[dict[str, Any]] | None,
+                        ) -> None:
                             translator.on_delta(evt, text_chunk, tool_calls)
 
                         # 执行重试桥接逻辑 (核心执行点)
@@ -176,7 +243,9 @@ async def chat_completions(request: Request):
                             on_delta=on_delta,
                         )
                         execution = result.execution
-                        directive = result.directive or build_tool_directive(standard_request, execution.state)
+                        directive = result.directive or build_tool_directive(
+                            standard_request, execution.state
+                        )
                         assistant_message = build_openai_assistant_history_message(
                             execution=execution,
                             request=standard_request,
@@ -190,16 +259,24 @@ async def chat_completions(request: Request):
                             execution=execution,
                             assistant_message=assistant_message,
                         )
-                        final_finish_reason = "tool_calls" if directive.stop_reason == "tool_use" else execution.state.finish_reason
+                        final_finish_reason = (
+                            "tool_calls"
+                            if directive.stop_reason == "tool_use"
+                            else execution.state.finish_reason
+                        )
                         for chunk in translator.finalize(final_finish_reason):
                             yield chunk
                         return
                     except HTTPException as he:
-                        await clear_invalidated_session_chat(app=app, request=standard_request)
+                        await clear_invalidated_session_chat(
+                            app=app, request=standard_request
+                        )
                         yield f"data: {json.dumps({'error': he.detail})}\n\n"
                         return
                     except Exception as e:
-                        await clear_invalidated_session_chat(app=app, request=standard_request)
+                        await clear_invalidated_session_chat(
+                            app=app, request=standard_request
+                        )
                         yield f"data: {json.dumps({'error': str(e)})}\n\n"
                         return
 
@@ -225,7 +302,9 @@ async def chat_completions(request: Request):
                     allow_after_visible_output=True,
                 )
                 execution = result.execution
-                directive = result.directive or build_tool_directive(standard_request, execution.state)
+                directive = result.directive or build_tool_directive(
+                    standard_request, execution.state
+                )
                 assistant_message = build_openai_assistant_history_message(
                     execution=execution,
                     request=standard_request,
@@ -240,14 +319,16 @@ async def chat_completions(request: Request):
                     assistant_message=assistant_message,
                 )
 
-                return JSONResponse(build_openai_completion_payload(
-                    completion_id=completion_id,
-                    created=created,
-                    model_name=model_name,
-                    prompt=result.prompt,
-                    execution=execution,
-                    standard_request=standard_request,
-                ))
+                return JSONResponse(
+                    build_openai_completion_payload(
+                        completion_id=completion_id,
+                        created=created,
+                        model_name=model_name,
+                        prompt=result.prompt,
+                        execution=execution,
+                        standard_request=standard_request,
+                    )
+                )
         except Exception as e:
             await clear_invalidated_session_chat(app=app, request=standard_request)
             raise HTTPException(status_code=500, detail=str(e))

@@ -237,6 +237,7 @@ export default function AccountsPage() {
       .finally(() => setSyncing(false))
   }
 
+
   const handleActivate = (targetEmail: string) => {
     const id = toast.loading(`\u6b63\u5728\u6fc0\u6d3b ${targetEmail}...`)
     fetch(`${API_BASE}/api/admin/accounts/${encodeURIComponent(targetEmail)}/activate`, {

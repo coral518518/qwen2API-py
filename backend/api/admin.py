@@ -7,6 +7,7 @@ import secrets
 
 router = APIRouter()
 
+
 def verify_admin(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Unauthorized")
@@ -19,9 +20,11 @@ def verify_admin(authorization: str = Header(None)):
         raise HTTPException(status_code=403, detail="Forbidden: Admin Key Mismatch")
     return token
 
+
 class UserCreate(BaseModel):
     name: str
     quota: int = 1000000
+
 
 class User(BaseModel):
     id: str
@@ -29,12 +32,59 @@ class User(BaseModel):
     quota: int
     used_tokens: int
 
+
 @router.get("/status", dependencies=[Depends(verify_admin)])
 async def get_system_status(request: Request):
     pool = request.app.state.account_pool
 
+    # 账号层细粒度 inflight / 状态
+    per_account = []
+    for acc in getattr(pool, "accounts", []):
+        per_account.append(
+            {
+                "email": acc.email,
+                "status": acc.get_status_code(),
+                "inflight": getattr(acc, "inflight", 0),
+                "max_inflight": getattr(pool, "max_inflight_per_account", 0),
+                "consecutive_failures": getattr(acc, "consecutive_failures", 0),
+                "rate_limit_strikes": getattr(acc, "rate_limit_strikes", 0),
+                "last_request_finished": getattr(acc, "last_request_finished", 0),
+            }
+        )
+
+    # chat_id 预热池指标（若已启用）
+    chat_id_pool_stats = None
+    cp = getattr(request.app.state, "chat_id_pool", None)
+    if cp is not None:
+        try:
+            per_account_pool: dict[str, int] = {}
+            for acc in getattr(pool, "accounts", []):
+                per_account_pool[acc.email] = await cp.size(acc.email)
+            chat_id_pool_stats = {
+                "total_cached": await cp.total_size(),
+                "target_per_account": cp._target,
+                "ttl_seconds": cp._ttl,
+                "per_account": per_account_pool,
+            }
+        except Exception:
+            chat_id_pool_stats = {"error": "snapshot failed"}
+
+    # 向运行时拿全局任务计数 / asyncio 状态
+    import asyncio
+
+    try:
+        tasks = asyncio.all_tasks()
+        running_tasks = sum(1 for t in tasks if not t.done())
+    except Exception:
+        running_tasks = -1
+
     return {
         "accounts": pool.status(),
+        "per_account": per_account,
+        "chat_id_pool": chat_id_pool_stats,
+        "runtime": {
+            "asyncio_running_tasks": running_tasks,
+        },
         "request_runtime": {
             "mode": "direct_http",
             "browser_required_for_requests": False,
@@ -43,8 +93,9 @@ async def get_system_status(request: Request):
         "browser_automation": {
             "mode": "on_demand_registration_only",
             "description": "仅注册/激活/刷新 Token 时按需启动真实浏览器",
-        }
+        },
     }
+
 
 @router.get("/users", dependencies=[Depends(verify_admin)])
 async def list_users(request: Request):
@@ -52,20 +103,23 @@ async def list_users(request: Request):
     data = await db.get()
     return {"users": data}
 
+
 @router.post("/users", dependencies=[Depends(verify_admin)])
 async def create_user(user: UserCreate, request: Request):
     import uuid
+
     db: AsyncJsonDB = request.app.state.users_db
     data = await db.get()
     new_user = {
         "id": f"sk-{uuid.uuid4().hex}",
         "name": user.name,
         "quota": user.quota,
-        "used_tokens": 0
+        "used_tokens": 0,
     }
     data.append(new_user)
     await db.save(data)
     return new_user
+
 
 @router.post("/accounts", dependencies=[Depends(verify_admin)])
 async def add_account(request: Request):
@@ -90,7 +144,7 @@ async def add_account(request: Request):
         password=data.get("password", ""),
         token=token,
         cookies=data.get("cookies", ""),
-        username=data.get("username", "")
+        username=data.get("username", ""),
     )
 
     is_valid = await client.verify_token(token)
@@ -114,12 +168,14 @@ async def list_accounts(request: Request):
         accs.append(d)
     return {"accounts": accs}
 
+
 @router.post("/accounts/register", dependencies=[Depends(verify_admin)])
 async def register_new_account(request: Request):
     """一键调用浏览器无头注册新千问账号"""
     import logging
     from backend.services.auth_resolver import register_qwen_account
     from backend.core.account_pool import AccountPool
+
     pool: AccountPool = request.app.state.account_pool
 
     log = logging.getLogger("backend.api.admin")
@@ -136,24 +192,28 @@ async def register_new_account(request: Request):
         acc = await register_qwen_account()
         if acc:
             await pool.add(acc)
-            log.info(f"[注册] 注册成功: {acc.email}（当前账号数: {len(pool.accounts)}/100）")
+            log.info(
+                f"[注册] 注册成功: {acc.email}（当前账号数: {len(pool.accounts)}/100）"
+            )
             return {"ok": True, "email": acc.email, "message": "新账号注册成功并已入池"}
         return {"ok": False, "error": "自动化注册失败，可能遇到风控或页面元素改变"}
     except Exception as e:
         return {"ok": False, "error": f"注册发生异常: {str(e)}"}
 
+
 @router.post("/accounts/sync", dependencies=[Depends(verify_admin)])
 async def sync_accounts(request: Request):
     from backend.core.account_pool import AccountPool
     from backend.services.account_sync import do_sync_accounts
-    
+
     pool: AccountPool = request.app.state.account_pool
     success, msg = await do_sync_accounts(pool)
-    
+
     if success:
         return {"ok": True, "message": msg}
     else:
         return {"ok": False, "error": msg}
+
 
 @router.post("/verify", dependencies=[Depends(verify_admin)])
 async def verify_all_accounts(request: Request):
@@ -174,10 +234,13 @@ async def verify_all_accounts(request: Request):
             is_valid = await client.auth_resolver.refresh_token(acc)
 
         acc.valid = is_valid
-        results.append({"email": acc.email, "valid": is_valid, "refreshed": not is_valid})
+        results.append(
+            {"email": acc.email, "valid": is_valid, "refreshed": not is_valid}
+        )
 
-    await pool.save() # 直接保存全部状态，不调用 mark_invalid 以免熔断影响测试
+    await pool.save()  # 直接保存全部状态，不调用 mark_invalid 以免熔断影响测试
     return {"ok": True, "results": results}
+
 
 @router.post("/accounts/{email}/activate", dependencies=[Depends(verify_admin)])
 async def activate_account(email: str, request: Request):
@@ -200,11 +263,12 @@ async def activate_account(email: str, request: Request):
         if success:
             acc.valid = True
             acc.activation_pending = False
-            await pool.add(acc) # 这会触发覆盖保存
+            await pool.add(acc)  # 这会触发覆盖保存
             return {"ok": True, "message": "账号激活成功"}
         return {"ok": False, "error": "未能找到激活链接或获取Token"}
     finally:
         setattr(acc, "_is_activating", False)
+
 
 @router.post("/accounts/{email}/verify", dependencies=[Depends(verify_admin)])
 async def verify_account(email: str, request: Request):
@@ -227,45 +291,79 @@ async def verify_account(email: str, request: Request):
         is_valid = await client.auth_resolver.refresh_token(acc)
 
     acc.valid = is_valid
-    await pool.save() # 直接保存，不调用 mark_invalid 以免熔断影响正常测试
+    await pool.save()  # 直接保存，不调用 mark_invalid 以免熔断影响正常测试
 
     return {"email": acc.email, "valid": is_valid}
+
 
 @router.delete("/accounts/{email}", dependencies=[Depends(verify_admin)])
 async def delete_account(email: str, request: Request):
     from backend.core.account_pool import AccountPool
+
     pool: AccountPool = request.app.state.account_pool
     await pool.remove(email)
     return {"ok": True}
 
+
 @router.get("/settings", dependencies=[Depends(verify_admin)])
-async def get_settings():
+async def get_settings(request: Request):
     from backend.core.config import MODEL_MAP
-    # 从 settings.py 所在的同级导入 VERSION，避免循环导入或未定义报错
     from backend.core.config import settings as backend_settings
 
-    # 强制将 dict 转换，确保能被 JSON 序列化
     safe_map = {k: v for k, v in MODEL_MAP.items()}
+    pool = getattr(request.app.state, "chat_id_pool", None)
+    acc_pool = getattr(request.app.state, "account_pool", None)
     return {
         "version": "2.0.0",
         "max_inflight_per_account": backend_settings.MAX_INFLIGHT_PER_ACCOUNT,
-        "model_aliases": safe_map
+        "global_max_inflight": getattr(acc_pool, "global_max_inflight", 0),
+        "max_queue_size": getattr(acc_pool, "max_queue_size", 0),
+        "chat_id_pool_target": pool.target if pool else 0,
+        "chat_id_pool_ttl_seconds": pool.ttl if pool else 0,
+        "model_aliases": safe_map,
     }
 
+
 @router.put("/settings", dependencies=[Depends(verify_admin)])
-async def update_settings(data: dict):
+async def update_settings(data: dict, request: Request):
     from backend.core.config import MODEL_MAP
+
     if "max_inflight_per_account" in data:
-        settings.MAX_INFLIGHT_PER_ACCOUNT = data["max_inflight_per_account"]
+        try:
+            val = int(data["max_inflight_per_account"])
+            settings.MAX_INFLIGHT_PER_ACCOUNT = val
+            pool = getattr(request.app.state, "account_pool", None)
+            if pool is not None and hasattr(pool, "set_max_inflight"):
+                pool.set_max_inflight(val)
+        except (TypeError, ValueError):
+            pass
+    if "global_max_inflight" in data:
+        try:
+            val = int(data["global_max_inflight"])
+            pool = getattr(request.app.state, "account_pool", None)
+            if pool is not None and val > 0:
+                pool.global_max_inflight = val
+        except (TypeError, ValueError):
+            pass
+    if "chat_id_pool_target" in data or "chat_id_pool_ttl_seconds" in data:
+        cp = getattr(request.app.state, "chat_id_pool", None)
+        if cp is not None:
+            cp.update_config(
+                target=data.get("chat_id_pool_target"),
+                ttl_seconds=data.get("chat_id_pool_ttl_seconds"),
+            )
     if "model_aliases" in data:
         MODEL_MAP.clear()
         MODEL_MAP.update(data["model_aliases"])
     return {"ok": True}
 
+
 @router.get("/keys", dependencies=[Depends(verify_admin)])
 async def get_keys():
     from backend.core.config import API_KEYS
+
     return {"keys": list(API_KEYS)}
+
 
 @router.post("/keys", dependencies=[Depends(verify_admin)])
 async def create_key():
@@ -275,6 +373,7 @@ async def create_key():
     API_KEYS.add(new_key)
     save_api_keys(API_KEYS)
     return {"ok": True, "key": new_key}
+
 
 @router.delete("/keys/{key}", dependencies=[Depends(verify_admin)])
 async def delete_key(key: str):
