@@ -58,7 +58,7 @@ def serve():
 
 # 这个函数每 1 分钟运行一次，仅在白天 09:00 - 24:00（UTC+8）期间运行
 # 注意：Modal 时间通常是 UTC，北京时间 09:00-24:00 对应 
-@app.function(schedule=modal.Cron("*/1 1-16 * * *")) 
+# @app.function(schedule=modal.Cron("*/1 1-16 * * *")) 
 def keep_warm():
     import urllib.request
     
