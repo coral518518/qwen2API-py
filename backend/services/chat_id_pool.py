@@ -131,7 +131,7 @@ class ChatIdPool:
         """定期轮询：每账号池低于 target 则补位。3000 秒一轮。"""
         interval = 3000.0
         # 初始化立即跑一轮
-        await asyncio.sleep(1.0)
+        await asyncio.sleep(8.0)
         while not self._shutdown:
             try:
                 await self._refill_once()

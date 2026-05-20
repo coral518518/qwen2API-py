@@ -22,12 +22,24 @@ from backend.services.file_store import LocalFileStore
 from backend.services.context_offload import ContextOffloader
 from backend.services.upstream_file_uploader import UpstreamFileUploader
 import backend.api.models as models
-from backend.api import admin, v1_chat, probes, anthropic, gemini, embeddings, images, files_api
+from backend.api import (
+    admin,
+    v1_chat,
+    probes,
+    anthropic,
+    gemini,
+    embeddings,
+    images,
+    files_api,
+)
 from backend.services.garbage_collector import garbage_collect_chats
 from backend.services.context_cleanup import context_cleanup_loop
+from backend.services.account_sync import auto_sync_loop
+
 
 configure_logging(getattr(logging, settings.LOG_LEVEL.upper(), logging.INFO))
 log = logging.getLogger("qwen2api")
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -38,19 +50,31 @@ async def lifespan(app: FastAPI):
         app.state.accounts_db = AsyncJsonDB(settings.ACCOUNTS_FILE, default_data=[])
         app.state.users_db = AsyncJsonDB(settings.USERS_FILE, default_data=[])
         app.state.captures_db = AsyncJsonDB(settings.CAPTURES_FILE, default_data=[])
-        app.state.session_affinity_db = AsyncJsonDB(settings.CONTEXT_AFFINITY_FILE, default_data=[])
-        app.state.context_cache_db = AsyncJsonDB(settings.CONTEXT_CACHE_FILE, default_data=[])
-        app.state.uploaded_files_db = AsyncJsonDB(settings.UPLOADED_FILES_FILE, default_data=[])
+        app.state.session_affinity_db = AsyncJsonDB(
+            settings.CONTEXT_AFFINITY_FILE, default_data=[]
+        )
+        app.state.context_cache_db = AsyncJsonDB(
+            settings.CONTEXT_CACHE_FILE, default_data=[]
+        )
+        app.state.uploaded_files_db = AsyncJsonDB(
+            settings.UPLOADED_FILES_FILE, default_data=[]
+        )
 
         # 初始化组件
-        app.state.account_pool = AccountPool(app.state.accounts_db, max_inflight=settings.MAX_INFLIGHT_PER_ACCOUNT)
+        app.state.account_pool = AccountPool(
+            app.state.accounts_db, max_inflight=settings.MAX_INFLIGHT_PER_ACCOUNT
+        )
         app.state.qwen_client = QwenClient(app.state.account_pool)
         app.state.qwen_executor = app.state.qwen_client.executor
-        app.state.file_store = LocalFileStore(settings.CONTEXT_GENERATED_DIR, app.state.uploaded_files_db)
+        app.state.file_store = LocalFileStore(
+            settings.CONTEXT_GENERATED_DIR, app.state.uploaded_files_db
+        )
         app.state.session_affinity = SessionAffinityStore(app.state.session_affinity_db)
         app.state.upstream_file_cache = UpstreamFileCache(app.state.context_cache_db)
         app.state.context_offloader = ContextOffloader(settings)
-        app.state.upstream_file_uploader = UpstreamFileUploader(app.state.qwen_client, settings)
+        app.state.upstream_file_uploader = UpstreamFileUploader(
+            app.state.qwen_client, settings
+        )
         app.state.session_locks = SessionLockRegistry()
 
         # 加载账号并启动后台清理任务
@@ -63,9 +87,19 @@ async def lifespan(app: FastAPI):
 
         # 启动 chat_id 预热池（省上游 /chats/new 握手 500ms~6s）
         from backend.services.chat_id_pool import ChatIdPool
-        app.state.chat_id_pool = ChatIdPool(app.state.qwen_client, target_per_account=5, ttl_seconds=600, default_model="qwen3.6-plus")
-        app.state.qwen_executor.chat_id_pool = app.state.chat_id_pool  # 让 executor 直接访问
+
+        app.state.chat_id_pool = ChatIdPool(
+            app.state.qwen_client,
+            target_per_account=5,
+            ttl_seconds=600,
+            default_model="qwen3.6-plus",
+        )
+        app.state.qwen_executor.chat_id_pool = (
+            app.state.chat_id_pool
+        )  # 让 executor 直接访问
         await app.state.chat_id_pool.start()
+
+        asyncio.create_task(auto_sync_loop(app.state.account_pool))
 
     yield
 
@@ -78,6 +112,7 @@ async def lifespan(app: FastAPI):
         # 关闭 HTTP 连接池
         await app.state.qwen_client._http_client.aclose()
         log.info("HTTP 连接池已关闭")
+
 
 app = FastAPI(title="qwen2API Enterprise Gateway", version="2.0.0", lifespan=lifespan)
 
@@ -100,16 +135,20 @@ app.include_router(files_api.router, tags=["Files"])
 app.include_router(probes.router, tags=["Probes"])
 app.include_router(admin.router, prefix="/api/admin", tags=["Dashboard Admin"])
 
+
 @app.get("/api", tags=["System"])
 async def root():
     return {
         "status": "qwen2API Enterprise Gateway is running",
         "docs": "/docs",
-        "version": "2.0.0"
+        "version": "2.0.0",
     }
 
+
 # 托管前端构建产物
-FRONTEND_DIST = os.path.join(os.path.dirname(os.path.dirname(__file__)), "frontend", "dist")
+FRONTEND_DIST = os.path.join(
+    os.path.dirname(os.path.dirname(__file__)), "frontend", "dist"
+)
 if os.path.exists(FRONTEND_DIST):
     app.mount("/", StaticFiles(directory=FRONTEND_DIST, html=True), name="frontend")
 else:
@@ -117,4 +156,5 @@ else:
 
 if __name__ == "__main__":
     import uvicorn
+
     uvicorn.run("backend.main:app", host="0.0.0.0", port=settings.PORT, workers=1)
