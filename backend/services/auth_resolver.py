@@ -1023,30 +1023,26 @@ class AuthResolver:
 
         log.info(f"[Refresh] 正在为 {acc.email} 刷新 token...")
         try:
-            async with _new_browser() as browser:
-                page = await browser.new_page()
-                new_token = await _login_and_get_token(
-                    page, acc.email, acc.password, timeout_sec=20
+            new_token = await _login_and_get_token(
+                None, acc.email, acc.password, timeout_sec=20
+            )
+            if new_token and new_token != acc.token:
+                old_prefix = acc.token[:20] if acc.token else "空"
+                acc.token = new_token
+                acc.valid = True
+                await self.pool.save()
+                log.info(
+                    f"[Refresh] {acc.email} token 已更新 ({old_prefix}... → {new_token[:20]}...)"
                 )
-                if new_token and new_token != acc.token:
-                    old_prefix = acc.token[:20] if acc.token else "空"
-                    acc.token = new_token
-                    acc.valid = True
-                    await self.pool.save()
-                    log.info(
-                        f"[Refresh] {acc.email} token 已更新 ({old_prefix}... → {new_token[:20]}...)"
-                    )
-                    return True
-                elif new_token == acc.token:
-                    # Token same but might still be valid — mark valid again
-                    acc.valid = True
-                    log.info(f"[Refresh] {acc.email} token 未变化，重新标记有效")
-                    return True
-                else:
-                    log.warning(
-                        f"[Refresh] {acc.email} 登录后未获取到token，URL={page.url}"
-                    )
-                    return False
+                return True
+            elif new_token == acc.token:
+                # Token same but might still be valid — mark valid again
+                acc.valid = True
+                log.info(f"[Refresh] {acc.email} token 未变化，重新标记有效")
+                return True
+            else:
+                log.warning(f"[Refresh] {acc.email} 登录后未获取到token")
+                return False
         except Exception as e:
             log.error(f"[Refresh] {acc.email} 刷新异常: {e}")
             return False
