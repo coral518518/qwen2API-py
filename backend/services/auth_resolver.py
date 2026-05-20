@@ -5,21 +5,27 @@ import logging
 import random
 import re
 import string
+from datetime import datetime
 import time
+import uuid
 from typing import Optional
+from curl_cffi import requests as cffi_requests
 
 from backend.core.account_pool import Account, AccountPool
 from backend.core.browser_engine import _new_browser
 from backend.core.config import settings
+
 log = logging.getLogger(__name__)
 
 BASE_URL = "https://chat.qwen.ai"
+
 
 async def _verify_qwen_token(token: str) -> bool:
     if not token:
         return False
     try:
         import httpx
+
         headers = {
             "Authorization": f"Bearer {token}",
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -27,7 +33,7 @@ async def _verify_qwen_token(token: str) -> bool:
             "Accept-Language": "zh-CN,zh;q=0.9,en;q=0.8",
             "Referer": "https://chat.qwen.ai/",
             "Origin": "https://chat.qwen.ai",
-            "Connection": "keep-alive"
+            "Connection": "keep-alive",
         }
         async with httpx.AsyncClient(timeout=15) as client:
             resp = await client.get(f"{BASE_URL}/api/v1/auths/", headers=headers)
@@ -38,32 +44,85 @@ async def _verify_qwen_token(token: str) -> bool:
             return data.get("role") == "user"
         except Exception:
             txt = resp.text.lower()
-            return 'aliyun_waf' in txt or '<!doctype' in txt
+            return "aliyun_waf" in txt or "<!doctype" in txt
     except Exception:
         return False
 
 
 async def get_fresh_token(email: str, password: str) -> str:
     """如果提供了此功能，用 playwright 重新登录获取 Token，这里提供一个 mock 或抛错以防未实现"""
-    raise NotImplementedError("Auto-login not fully implemented yet in the separated architecture")
+    raise NotImplementedError(
+        "Auto-login not fully implemented yet in the separated architecture"
+    )
+
 
 def _gen_password(length=14):
     chars = string.ascii_letters + string.digits + "!@#$%^&*"
     while True:
         pwd = "".join(random.choices(chars, k=length))
-        if (any(c.isupper() for c in pwd) and any(c.islower() for c in pwd)
-                and any(c.isdigit() for c in pwd) and any(c in "!@#$%^&*" for c in pwd)):
+        if (
+            any(c.isupper() for c in pwd)
+            and any(c.islower() for c in pwd)
+            and any(c.isdigit() for c in pwd)
+            and any(c in "!@#$%^&*" for c in pwd)
+        ):
             return pwd
 
+
 def _gen_username():
-    first = random.choice(["Alex", "Sam", "Jordan", "Taylor", "Morgan", "Casey", "Riley", "Jamie",
-                            "Drew", "Avery", "Quinn", "Blake", "Sage", "Reese", "Dakota", "Emery"])
-    last = random.choice(["Smith", "Brown", "Wilson", "Lee", "Chen", "Wang", "Kim", "Park",
-                           "Davis", "Miller", "Garcia", "Martinez", "Anderson", "Taylor", "Thomas"])
+    first = random.choice(
+        [
+            "Alex",
+            "Sam",
+            "Jordan",
+            "Taylor",
+            "Morgan",
+            "Casey",
+            "Riley",
+            "Jamie",
+            "Drew",
+            "Avery",
+            "Quinn",
+            "Blake",
+            "Sage",
+            "Reese",
+            "Dakota",
+            "Emery",
+        ]
+    )
+    last = random.choice(
+        [
+            "Smith",
+            "Brown",
+            "Wilson",
+            "Lee",
+            "Chen",
+            "Wang",
+            "Kim",
+            "Park",
+            "Davis",
+            "Miller",
+            "Garcia",
+            "Martinez",
+            "Anderson",
+            "Taylor",
+            "Thomas",
+        ]
+    )
     return f"{first} {last}"
 
+
 MAIL_BASE = "https://mail.chatgpt.org.uk"
-MAIL_LINK_KEYWORDS = ("qwen", "verify", "activate", "confirm", "aliyun", "alibaba", "qwenlm")
+MAIL_LINK_KEYWORDS = (
+    "qwen",
+    "verify",
+    "activate",
+    "confirm",
+    "aliyun",
+    "alibaba",
+    "qwenlm",
+)
+
 
 async def _extract_verify_link_from_page(page) -> str:
     js_find_link = """() => {
@@ -84,7 +143,7 @@ async def _extract_verify_link_from_page(page) -> str:
     }"""
 
     try:
-        iframe_el = await page.query_selector('#emailFrame')
+        iframe_el = await page.query_selector("#emailFrame")
         if iframe_el:
             await asyncio.sleep(3)
             frame = await iframe_el.content_frame()
@@ -100,6 +159,7 @@ async def _extract_verify_link_from_page(page) -> str:
     except Exception:
         return ""
 
+
 async def _find_verify_link_via_mail_page(email: str) -> str:
     mail_url = f"{MAIL_BASE}/{email}"
     try:
@@ -109,7 +169,9 @@ async def _find_verify_link_via_mail_page(email: str) -> str:
                 await page.goto(mail_url, wait_until="networkidle", timeout=30000)
             except Exception:
                 try:
-                    await page.goto(mail_url, wait_until="domcontentloaded", timeout=15000)
+                    await page.goto(
+                        mail_url, wait_until="domcontentloaded", timeout=15000
+                    )
                 except Exception:
                     pass
             await asyncio.sleep(6)
@@ -136,9 +198,16 @@ async def _find_verify_link_via_mail_page(email: str) -> str:
                 pass
 
             clicked_email = False
-            for sel in ['#emailList li:first-child', '#emailList li', '[class*="EmailItem"]',
-                        '[class*="email-item"]', '[class*="MailItem"]', '[class*="mail-item"]',
-                        'table tbody tr:first-child', '[role="row"]:first-child']:
+            for sel in [
+                "#emailList li:first-child",
+                "#emailList li",
+                '[class*="EmailItem"]',
+                '[class*="email-item"]',
+                '[class*="MailItem"]',
+                '[class*="mail-item"]',
+                "table tbody tr:first-child",
+                '[role="row"]:first-child',
+            ]:
                 try:
                     await page.wait_for_selector(sel, timeout=10000)
                     el = await page.query_selector(sel)
@@ -151,13 +220,22 @@ async def _find_verify_link_via_mail_page(email: str) -> str:
                     pass
 
             if not clicked_email:
-                for sel in ['li', 'tr', 'div[class]', '[class*="row"]', '[class*="item"]']:
+                for sel in [
+                    "li",
+                    "tr",
+                    "div[class]",
+                    '[class*="row"]',
+                    '[class*="item"]',
+                ]:
                     try:
                         els = await page.query_selector_all(sel)
                         for el in (els or [])[:10]:
                             try:
                                 text = await el.inner_text()
-                                if any(keyword in text.lower() for keyword in MAIL_LINK_KEYWORDS):
+                                if any(
+                                    keyword in text.lower()
+                                    for keyword in MAIL_LINK_KEYWORDS
+                                ):
                                     await el.click(force=True)
                                     await asyncio.sleep(4)
                                     clicked_email = True
@@ -174,15 +252,19 @@ async def _find_verify_link_via_mail_page(email: str) -> str:
         log.warning(f"[Activate] mailbox page fallback failed for {email}: {e}")
         return ""
 
+
 class _EmailSession:
     def __init__(self):
         from curl_cffi import requests as cffi_requests
+
         self._session = cffi_requests.Session(impersonate="chrome")
-        self._session.headers.update({
-            "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
-                          "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36 Edg/145.0.0.0",
-            "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
-        })
+        self._session.headers.update(
+            {
+                "user-agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 "
+                "(KHTML, like Gecko) Chrome/145.0.0.0 Safari/537.36 Edg/145.0.0.0",
+                "accept-language": "zh-CN,zh;q=0.9,en;q=0.8",
+            }
+        )
         self._current_token = ""
         self._token_expires_at = 0
         self._initialized = False
@@ -192,7 +274,7 @@ class _EmailSession:
             resp = self._session.get(f"{MAIL_BASE}/", timeout=15)
             if resp.status_code != 200:
                 return False
-            match = re.search(r'window\.__BROWSER_AUTH\s*=\s*(\{[^}]+\})', resp.text)
+            match = re.search(r"window\.__BROWSER_AUTH\s*=\s*(\{[^}]+\})", resp.text)
             if match:
                 auth_data = json.loads(match.group(1))
                 self._current_token = auth_data.get("token", "")
@@ -213,7 +295,11 @@ class _EmailSession:
             return False
 
     def _ensure_token(self) -> bool:
-        if not self._initialized or not self._current_token or time.time() > self._token_expires_at - 120:
+        if (
+            not self._initialized
+            or not self._current_token
+            or time.time() > self._token_expires_at - 120
+        ):
             return self._init_session()
         return True
 
@@ -234,7 +320,10 @@ class _EmailSession:
             resp = self._session.post(
                 f"{MAIL_BASE}/api/inbox-token",
                 json={"email": email},
-                headers={"content-type": "application/json", "referer": f"{MAIL_BASE}/{email}"},
+                headers={
+                    "content-type": "application/json",
+                    "referer": f"{MAIL_BASE}/{email}",
+                },
                 timeout=15,
             )
             if resp.status_code != 200:
@@ -263,19 +352,25 @@ class _EmailSession:
                 parts.append(v)
         combined = " ".join(parts)
         combined = html_lib.unescape(combined)
-        combined = (combined.replace("\u003c", "<").replace("\u003e", ">")
-                            .replace("\u0026", "&").replace("\\/", "/"))
+        combined = (
+            combined.replace("\u003c", "<")
+            .replace("\u003e", ">")
+            .replace("\u0026", "&")
+            .replace("\\/", "/")
+        )
 
-        href_links = re.findall(r"href=[\"'](https?://[^\"']+)[\"']", combined, flags=re.IGNORECASE)
+        href_links = re.findall(
+            r"href=[\"'](https?://[^\"']+)[\"']", combined, flags=re.IGNORECASE
+        )
         text_links = re.findall(r"https?://[^\s\"'<>\,\)]+", combined)
         for link in href_links + text_links:
-            link = link.rstrip('.,;)')
+            link = link.rstrip(".,;)")
             if any(keyword in link.lower() for keyword in MAIL_LINK_KEYWORDS):
                 return link
         if any(keyword in subject.lower() for keyword in MAIL_LINK_KEYWORDS):
             for link in href_links + text_links:
-                if link.startswith('http'):
-                    return link.rstrip('.,;)')
+                if link.startswith("http"):
+                    return link.rstrip(".,;)")
         return ""
 
     def get_email(self) -> str:
@@ -283,8 +378,11 @@ class _EmailSession:
             raise Exception("mail.chatgpt.org.uk: session init failed")
         resp = self._session.get(
             f"{MAIL_BASE}/api/generate-email",
-            headers={"accept": "*/*", "referer": f"{MAIL_BASE}/",
-                     "x-inbox-token": self._current_token},
+            headers={
+                "accept": "*/*",
+                "referer": f"{MAIL_BASE}/",
+                "x-inbox-token": self._current_token,
+            },
             timeout=15,
         )
         if resp.status_code == 401 or resp.status_code == 403:
@@ -292,8 +390,11 @@ class _EmailSession:
             self._init_session()
             resp = self._session.get(
                 f"{MAIL_BASE}/api/generate-email",
-                headers={"accept": "*/*", "referer": f"{MAIL_BASE}/",
-                         "x-inbox-token": self._current_token},
+                headers={
+                    "accept": "*/*",
+                    "referer": f"{MAIL_BASE}/",
+                    "x-inbox-token": self._current_token,
+                },
                 timeout=15,
             )
         data = resp.json()
@@ -367,19 +468,24 @@ class _EmailSession:
                     if data.get("auth"):
                         self._set_auth(data.get("auth", {}))
                     emails_list = data.get("data", {}).get("emails", [])
-                    log.info(f"[邮件] 第 {attempt} 次轮询，收到 {len(emails_list)} 封邮件")
+                    log.info(
+                        f"[邮件] 第 {attempt} 次轮询，收到 {len(emails_list)} 封邮件"
+                    )
                     for msg in emails_list:
                         link = self._extract_verify_link_from_email_record(msg)
                         if link:
                             log.info(f"[邮件] 找到验证链接：{link[:160]}...")
                             return link
                 else:
-                    log.warning(f"[MailSession] email API HTTP {resp.status_code}: {resp.text[:120]}")
+                    log.warning(
+                        f"[MailSession] email API HTTP {resp.status_code}: {resp.text[:120]}"
+                    )
             except Exception as e:
                 log.warning(f"[MailSession] poll error: {e}")
             time.sleep(2)
         log.error("[邮件] 轮询超时，未找到验证邮件")
         return ""
+
 
 class _AsyncMailClient:
     def __init__(self):
@@ -398,10 +504,15 @@ class _AsyncMailClient:
         return self._email
 
     async def get_verify_link(self, timeout_sec: int = 300) -> str:
-        return await asyncio.to_thread(self._sess.poll_verify_link, self._email, timeout_sec)
+        return await asyncio.to_thread(
+            self._sess.poll_verify_link, self._email, timeout_sec
+        )
 
-    async def get_verify_link_for_email(self, email: str, timeout_sec: int = 300) -> str:
+    async def get_verify_link_for_email(
+        self, email: str, timeout_sec: int = 300
+    ) -> str:
         return await asyncio.to_thread(self._sess.poll_verify_link, email, timeout_sec)
+
 
 async def register_qwen_account() -> Optional[Account]:
     log.info("[Register] ── 开始注册流程 ──")
@@ -415,60 +526,84 @@ async def register_qwen_account() -> Optional[Account]:
         try:
             async with _new_browser() as browser:
                 page = await browser.new_page()
-                log.info(f"[Register] [2/7] 打开注册页面: {BASE_URL}/auth?action=signup")
+                log.info(
+                    f"[Register] [2/7] 打开注册页面: {BASE_URL}/auth?action=signup"
+                )
                 try:
-                    await page.goto(f"{BASE_URL}/auth?action=signup", wait_until="domcontentloaded", timeout=60000)
+                    await page.goto(
+                        f"{BASE_URL}/auth?action=signup",
+                        wait_until="domcontentloaded",
+                        timeout=60000,
+                    )
                 except Exception as e:
                     log.warning(f"[Register] [2/7] 页面加载异常: {e}")
 
                 log.info("[Register] [3/7] 填写注册表单...")
                 name_input = None
-                for sel in ['input[placeholder*="Full Name"]', 'input[placeholder*="Name"]']:
+                for sel in [
+                    'input[placeholder*="Full Name"]',
+                    'input[placeholder*="Name"]',
+                ]:
                     try:
                         name_input = await page.wait_for_selector(sel, timeout=15000)
-                        if name_input: break
+                        if name_input:
+                            break
                     except Exception:
                         pass
                 if not name_input:
-                    inputs = await page.query_selector_all('input')
+                    inputs = await page.query_selector_all("input")
                     name_input = inputs[0] if len(inputs) >= 4 else None
                 if not name_input:
                     log.error("[Register] [3/7] 找不到姓名输入框，注册中止")
                     return None
 
-                await name_input.click(); await name_input.fill(username)
+                await name_input.click()
+                await name_input.fill(username)
                 log.info(f"[Register] [3/7]  ✓ 姓名: {username}")
                 email_input = await page.query_selector('input[placeholder*="Email"]')
                 if not email_input:
-                    inputs = await page.query_selector_all('input')
+                    inputs = await page.query_selector_all("input")
                     email_input = inputs[1] if len(inputs) >= 2 else None
-                if email_input: await email_input.click(); await email_input.fill(email)
+                if email_input:
+                    await email_input.click()
+                    await email_input.fill(email)
                 log.info(f"[Register] [3/7]  ✓ 邮箱: {email}")
 
-                pwd_input = await page.query_selector('input[placeholder*="Password"]:not([placeholder*="Again"])')
+                pwd_input = await page.query_selector(
+                    'input[placeholder*="Password"]:not([placeholder*="Again"])'
+                )
                 if not pwd_input:
-                    inputs = await page.query_selector_all('input')
+                    inputs = await page.query_selector_all("input")
                     pwd_input = inputs[2] if len(inputs) >= 3 else None
-                if pwd_input: await pwd_input.click(); await pwd_input.fill(password)
+                if pwd_input:
+                    await pwd_input.click()
+                    await pwd_input.fill(password)
 
                 confirm_input = await page.query_selector('input[placeholder*="Again"]')
                 if not confirm_input:
-                    inputs = await page.query_selector_all('input')
+                    inputs = await page.query_selector_all("input")
                     confirm_input = inputs[3] if len(inputs) >= 4 else None
-                if confirm_input: await confirm_input.click(); await confirm_input.fill(password)
+                if confirm_input:
+                    await confirm_input.click()
+                    await confirm_input.fill(password)
                 log.info("[Register] [3/7]  ✓ 密码已填写")
 
                 checkbox = await page.query_selector('input[type="checkbox"]')
-                if checkbox and not await checkbox.is_checked(): await checkbox.click()
+                if checkbox and not await checkbox.is_checked():
+                    await checkbox.click()
                 else:
-                    agree = await page.query_selector('text=I agree')
-                    if agree: await agree.click()
+                    agree = await page.query_selector("text=I agree")
+                    if agree:
+                        await agree.click()
                 log.info("[Register] [3/7]  ✓ 同意条款")
 
                 log.info("[Register] [4/7] 提交注册表单...")
                 await asyncio.sleep(1)
-                submit = await page.query_selector('button:has-text("Create Account")') or await page.query_selector('button[type="submit"]')
-                if submit: await submit.click()
+                submit = await page.query_selector(
+                    'button:has-text("Create Account")'
+                ) or await page.query_selector('button[type="submit"]')
+                if submit:
+                    await submit.click()
                 log.info("[Register] [4/7] 已点击提交，等待页面跳转（6s）...")
                 await asyncio.sleep(6)
 
@@ -482,20 +617,33 @@ async def register_qwen_account() -> Optional[Account]:
                     await asyncio.sleep(3)
                     token = await page.evaluate("localStorage.getItem('token')")
                     if token:
-                        log.info("[Register] [5/7] ✓ 注册后直接获取到token，跳过邮件验证")
+                        log.info(
+                            "[Register] [5/7] ✓ 注册后直接获取到token，跳过邮件验证"
+                        )
 
                 # If no token yet, try explicit login with email+password (faster than email poll)
                 if not token:
                     log.info("[Register] [5/7] 尝试用账号密码直接登录...")
                     try:
-                        await page.goto(f"{BASE_URL}/auth", wait_until="domcontentloaded", timeout=30000)
+                        await page.goto(
+                            f"{BASE_URL}/auth",
+                            wait_until="domcontentloaded",
+                            timeout=30000,
+                        )
                         await asyncio.sleep(3)
-                        li_email = await page.query_selector('input[placeholder*="Email"]')
-                        if li_email: await li_email.fill(email)
+                        li_email = await page.query_selector(
+                            'input[placeholder*="Email"]'
+                        )
+                        if li_email:
+                            await li_email.fill(email)
                         li_pwd = await page.query_selector('input[type="password"]')
-                        if li_pwd: await li_pwd.fill(password)
-                        li_btn = await page.query_selector('button:has-text("Log in")') or await page.query_selector('button[type="submit"]')
-                        if li_btn: await li_btn.click()
+                        if li_pwd:
+                            await li_pwd.fill(password)
+                        li_btn = await page.query_selector(
+                            'button:has-text("Log in")'
+                        ) or await page.query_selector('button[type="submit"]')
+                        if li_btn:
+                            await li_btn.click()
                         await asyncio.sleep(8)
                         token = await page.evaluate("localStorage.getItem('token')")
                         if token:
@@ -505,10 +653,14 @@ async def register_qwen_account() -> Optional[Account]:
 
                 # If still no token, use mailbox email API first, then fall back to page lookup.
                 if not token:
-                    log.info(f"[Register] [6/7] polling mailbox email API for {email}...")
+                    log.info(
+                        f"[Register] [6/7] polling mailbox email API for {email}..."
+                    )
                     verify_link = await mail_client.get_verify_link(timeout_sec=60)
                     if not verify_link:
-                        log.info(f"[注册] [6/7] 邮件 API 未返回链接，尝试页面方式 {email}")
+                        log.info(
+                            f"[注册] [6/7] 邮件 API 未返回链接，尝试页面方式 {email}"
+                        )
                         verify_link = await _find_verify_link_via_mail_page(email)
 
                     if not verify_link:
@@ -517,8 +669,11 @@ async def register_qwen_account() -> Optional[Account]:
 
                     log.info(f"[Register] [6/7] ✓ 收到验证链接，访问中...")
                     try:
-                        await page.goto(verify_link, wait_until="domcontentloaded", timeout=30000)
-                    except Exception: pass
+                        await page.goto(
+                            verify_link, wait_until="domcontentloaded", timeout=30000
+                        )
+                    except Exception:
+                        pass
                     await asyncio.sleep(6)
                     token = await page.evaluate("localStorage.getItem('token')")
                     log.info(f"[Register] [6/7] 验证后URL: {page.url}")
@@ -527,19 +682,31 @@ async def register_qwen_account() -> Optional[Account]:
                     if not token:
                         log.info("[Register] [6/7] 验证链接后尝试登录...")
                         try:
-                            await page.goto(f"{BASE_URL}/auth", wait_until="domcontentloaded", timeout=30000)
+                            await page.goto(
+                                f"{BASE_URL}/auth",
+                                wait_until="domcontentloaded",
+                                timeout=30000,
+                            )
                             await asyncio.sleep(3)
-                            li_email = await page.query_selector('input[placeholder*="Email"]')
-                            if li_email: await li_email.fill(email)
+                            li_email = await page.query_selector(
+                                'input[placeholder*="Email"]'
+                            )
+                            if li_email:
+                                await li_email.fill(email)
                             li_pwd = await page.query_selector('input[type="password"]')
-                            if li_pwd: await li_pwd.fill(password)
-                            li_btn = await page.query_selector('button:has-text("Log in")') or await page.query_selector('button[type="submit"]')
-                            if li_btn: await li_btn.click()
+                            if li_pwd:
+                                await li_pwd.fill(password)
+                            li_btn = await page.query_selector(
+                                'button:has-text("Log in")'
+                            ) or await page.query_selector('button[type="submit"]')
+                            if li_btn:
+                                await li_btn.click()
                             await asyncio.sleep(8)
                             token = await page.evaluate("localStorage.getItem('token')")
                             if token:
                                 log.info("[Register] [6/7] ✓ 验证后登录成功")
-                        except Exception: pass
+                        except Exception:
+                            pass
 
                 if not token:
                     log.error("[Register] 所有方法均无法获取token，注册失败")
@@ -547,17 +714,53 @@ async def register_qwen_account() -> Optional[Account]:
 
                 log.info("[Register] [7/7] 提取 cookies...")
                 all_cookies = await page.context.cookies()
-                cookie_str = "; ".join(f"{c.get('name','')}={c.get('value','')}" for c in all_cookies if "qwen" in c.get("domain", ""))
+                cookie_str = "; ".join(
+                    f"{c.get('name', '')}={c.get('value', '')}"
+                    for c in all_cookies
+                    if "qwen" in c.get("domain", "")
+                )
                 log.info(f"[Register] ✓ 注册完成: {email}")
-                return Account(email=email, password=password, token=token, cookies=cookie_str, username=username, activation_pending=False)
+                return Account(
+                    email=email,
+                    password=password,
+                    token=token,
+                    cookies=cookie_str,
+                    username=username,
+                    activation_pending=False,
+                )
         except Exception as e:
             import traceback
+
             log.error(f"[Register] 注册异常: {e}\n{traceback.format_exc()}")
             return None
 
-async def _login_and_get_token(page, email: str, password: str, timeout_sec: int = 20) -> str:
+
+async def _login_and_get_token(
+    page, email: str, password: str, timeout_sec: int = 20
+) -> str:
     try:
-        await page.goto(f"{BASE_URL}/auth", wait_until="domcontentloaded", timeout=30000)
+        client = QwenClient()
+        login_url = "https://chat.qwen.ai/api/v2/auths/signin"
+        login_data = {
+            "email": email,
+            "password": "b091059d0868a1b2584cec19e44360d55fbc8c7b64bffb1e5ac30095c786db6a",
+        }
+        cookies = "acw_tc=; x-ap=;"
+        print("正在登录...")
+        login_resp = client.post(login_url, login_data, cookies=cookies)
+        if login_resp.status_code == 200:
+            token = client.session.cookies.get("token") or login_resp.cookies.get(
+                "token"
+            )
+            print("登录成功! token值:", token)
+        else:
+            print(
+                f"登录失败! 状态码: {login_resp.status_code}, 内容: {login_resp.text}"
+            )
+        return token
+        await page.goto(
+            f"{BASE_URL}/auth", wait_until="domcontentloaded", timeout=30000
+        )
     except Exception:
         pass
     await asyncio.sleep(2)
@@ -575,26 +778,26 @@ async def _login_and_get_token(page, email: str, password: str, timeout_sec: int
 
     if (not email_input) or (not pwd_input):
         try:
-            inputs = await page.query_selector_all('input')
+            inputs = await page.query_selector_all("input")
         except Exception:
             inputs = []
         text_inputs = []
         for item in inputs:
             try:
-                t = await item.get_attribute('type')
+                t = await item.get_attribute("type")
             except Exception:
                 t = None
-            if t in (None, '', 'text', 'email'):
+            if t in (None, "", "text", "email"):
                 text_inputs.append(item)
         if not email_input and text_inputs:
             email_input = text_inputs[0]
         if not pwd_input:
             for item in inputs:
                 try:
-                    t = await item.get_attribute('type')
+                    t = await item.get_attribute("type")
                 except Exception:
                     t = None
-                if t == 'password':
+                if t == "password":
                     pwd_input = item
                     break
 
@@ -621,9 +824,9 @@ async def _login_and_get_token(page, email: str, password: str, timeout_sec: int
         try:
             submit = await page.query_selector(sel)
             if submit:
-                disabled = await submit.get_attribute('disabled')
-                aria_disabled = await submit.get_attribute('aria-disabled')
-                if disabled is None and aria_disabled not in ('true', 'disabled'):
+                disabled = await submit.get_attribute("disabled")
+                aria_disabled = await submit.get_attribute("aria-disabled")
+                if disabled is None and aria_disabled not in ("true", "disabled"):
                     break
         except Exception:
             pass
@@ -642,7 +845,7 @@ async def _login_and_get_token(page, email: str, password: str, timeout_sec: int
 
     if not clicked and pwd_input:
         try:
-            await pwd_input.press('Enter')
+            await pwd_input.press("Enter")
         except Exception:
             pass
 
@@ -656,6 +859,7 @@ async def _login_and_get_token(page, email: str, password: str, timeout_sec: int
             return token
         await asyncio.sleep(1)
     return ""
+
 
 async def activate_account(acc: Account) -> bool:
     """Use inbox API first, then mailbox-page fallback, to activate an account."""
@@ -674,7 +878,9 @@ async def activate_account(acc: Account) -> bool:
         verify_link = ""
         try:
             async with _AsyncMailClient() as mail_client:
-                verify_link = await mail_client.get_verify_link_for_email(acc.email, timeout_sec=30)
+                verify_link = await mail_client.get_verify_link_for_email(
+                    acc.email, timeout_sec=30
+                )
         except Exception as e:
             log.warning(f"[激活] {acc.email} 邮件 API 失败: {e}")
 
@@ -694,17 +900,23 @@ async def activate_account(acc: Account) -> bool:
                 await page.goto(verify_link, wait_until="networkidle", timeout=30000)
             except Exception:
                 try:
-                    await page.goto(verify_link, wait_until="domcontentloaded", timeout=15000)
+                    await page.goto(
+                        verify_link, wait_until="domcontentloaded", timeout=15000
+                    )
                 except Exception:
                     pass
 
             await asyncio.sleep(5)
             token = await page.evaluate("localStorage.getItem('token')")
-            log.info(f"[激活] {acc.email} 访问验证链接后 URL={page.url}，Token：{'有' if token else '无'}")
+            log.info(
+                f"[激活] {acc.email} 访问验证链接后 URL={page.url}，Token：{'有' if token else '无'}"
+            )
 
             if not token and acc.password:
                 try:
-                    token = await _login_and_get_token(page, acc.email, acc.password, timeout_sec=20)
+                    token = await _login_and_get_token(
+                        page, acc.email, acc.password, timeout_sec=20
+                    )
                 except Exception as e:
                     log.warning(f"[激活] {acc.email} 登录获取 token 失败: {e}")
 
@@ -731,8 +943,10 @@ async def activate_account(acc: Account) -> bool:
         setattr(acc, "_is_activating", False)
         setattr(acc, "_activation_started_at", 0)
 
+
 class AuthResolver:
     """自动登录并提取 Token，在检测到 401 时自动自愈凭证"""
+
     def __init__(self, pool: AccountPool):
         self.pool = pool
 
@@ -747,12 +961,14 @@ class AuthResolver:
         try:
             ok = await self.refresh_token(acc)
             if ok:
-                if not getattr(acc, 'activation_pending', False):
+                if not getattr(acc, "activation_pending", False):
                     acc.valid = True
                     await self.pool.save()
                     log.info(f"[自愈] {acc.email} Token 刷新成功，已标记有效")
                     return
-                log.info(f"[BGRefresh] {acc.email} token refreshed but account still needs activation")
+                log.info(
+                    f"[BGRefresh] {acc.email} token refreshed but account still needs activation"
+                )
             else:
                 log.warning(f"[自愈] {acc.email} Token 刷新失败，尝试激活")
 
@@ -770,23 +986,26 @@ class AuthResolver:
             acc.healing = False
 
     async def refresh_token(self, acc: Account) -> bool:
-
         """Re-login with email+password to get a fresh token. Returns True on success."""
         if not acc.email or not acc.password:
             log.warning(f"[Refresh] 账号 {acc.email} 无密码，无法刷新")
             return False
-            
+
         log.info(f"[Refresh] 正在为 {acc.email} 刷新 token...")
         try:
             async with _new_browser() as browser:
                 page = await browser.new_page()
-                new_token = await _login_and_get_token(page, acc.email, acc.password, timeout_sec=20)
+                new_token = await _login_and_get_token(
+                    page, acc.email, acc.password, timeout_sec=20
+                )
                 if new_token and new_token != acc.token:
                     old_prefix = acc.token[:20] if acc.token else "空"
                     acc.token = new_token
                     acc.valid = True
                     await self.pool.save()
-                    log.info(f"[Refresh] {acc.email} token 已更新 ({old_prefix}... → {new_token[:20]}...)")
+                    log.info(
+                        f"[Refresh] {acc.email} token 已更新 ({old_prefix}... → {new_token[:20]}...)"
+                    )
                     return True
                 elif new_token == acc.token:
                     # Token same but might still be valid — mark valid again
@@ -794,8 +1013,63 @@ class AuthResolver:
                     log.info(f"[Refresh] {acc.email} token 未变化，重新标记有效")
                     return True
                 else:
-                    log.warning(f"[Refresh] {acc.email} 登录后未获取到token，URL={page.url}")
+                    log.warning(
+                        f"[Refresh] {acc.email} 登录后未获取到token，URL={page.url}"
+                    )
                     return False
         except Exception as e:
             log.error(f"[Refresh] {acc.email} 刷新异常: {e}")
             return False
+
+
+class QwenClient:
+    def __init__(self):
+        self.session = cffi_requests.Session(impersonate="chrome")
+        self.session.headers.update(self._build_headers())
+
+    def _random_ua(self):
+        chrome_version = f"{random.randint(130, 145)}.0.0.0"
+        return f"Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/{chrome_version} Safari/537.36"
+
+    def _timezone(self):
+        return datetime.now().strftime("%a %b %d %Y %H:%M:%S GMT+0800")
+
+    def _build_headers(self):
+        return {
+            "accept": "application/json, text/plain, */*",
+            "accept-encoding": "gzip, deflate, br, zstd",
+            "accept-language": "zh-CN,zh;q=0.9",
+            "bx-v": "2.5.36",
+            "cache-control": "no-cache",
+            "content-type": "application/json",
+            "origin": "https://chat.qwen.ai",
+            "pragma": "no-cache",
+            "referer": "https://chat.qwen.ai/",
+            "sec-ch-ua": f'"Chromium";v="{random.randint(130, 145)}", "Not:A-Brand";v="99"',
+            "sec-ch-ua-mobile": "?0",
+            "sec-ch-ua-platform": '"Windows"',
+            "sec-fetch-dest": "empty",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-site": "same-origin",
+            "source": "web",
+            "timezone": self._timezone(),
+            "user-agent": self._random_ua(),
+            "version": f"0.2.{random.randint(30, 50)}",
+            "x-request-id": str(uuid.uuid4()),
+        }
+
+    def post(self, url, data, cookies=None):
+        if cookies:
+            self.session.headers.update({"cookie": cookies})
+
+        # 每次请求刷新动态字段
+        self.session.headers.update(
+            {"x-request-id": str(uuid.uuid4()), "timezone": self._timezone()}
+        )
+
+        resp = self.session.post(url, json=data)
+
+        print("Status:", resp.status_code)
+        print("Response:", resp.text[:500])
+
+        return resp

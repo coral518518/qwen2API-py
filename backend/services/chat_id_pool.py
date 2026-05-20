@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import time
+import random
 from collections import deque
 from typing import Any, Optional
 
@@ -58,7 +59,9 @@ class ChatIdPool:
     def ttl(self) -> float:
         return self._ttl
 
-    def update_config(self, *, target: int | None = None, ttl_seconds: float | None = None) -> None:
+    def update_config(
+        self, *, target: int | None = None, ttl_seconds: float | None = None
+    ) -> None:
         """运行时热更新参数。target 调小会在下一轮 refill 时把多余的 chat_id 丢掉；
         调大会在下一轮补位时扩容。TTL 变化影响下一次 acquire 的过期判断。"""
         if target is not None:
@@ -106,21 +109,27 @@ class ChatIdPool:
             token = account.token
             email = account.email
             if not token:
-                log.warning(f"[ChatIdPool] prewarm skipped email={email}: missing token")
+                log.warning(
+                    f"[ChatIdPool] prewarm skipped email={email}: missing token"
+                )
                 return
             chat_id = await self._client.executor.create_chat(token, model)
             async with self._lock:
                 q = self._queues.setdefault(email, deque())
                 q.append(_Entry(chat_id))
-                log.info(f"[ChatIdPool] prewarmed email={email} chat_id={chat_id} pool_size={len(q)}")
+                log.info(
+                    f"[ChatIdPool] prewarmed email={email} chat_id={chat_id} pool_size={len(q)}"
+                )
         except Exception as e:
             # Make sure empty-string exceptions still show class name
             err = str(e) or type(e).__name__
-            log.warning(f"[ChatIdPool] prewarm failed email={getattr(account, 'email', '?')}: {err}")
+            log.warning(
+                f"[ChatIdPool] prewarm failed email={getattr(account, 'email', '?')}: {err}"
+            )
 
     async def _refill_loop(self) -> None:
-        """定期轮询：每账号池低于 target 则补位。30 秒一轮。"""
-        interval = 30.0
+        """定期轮询：每账号池低于 target 则补位。3000 秒一轮。"""
+        interval = 3000.0
         # 初始化立即跑一轮
         await asyncio.sleep(1.0)
         while not self._shutdown:
@@ -138,7 +147,11 @@ class ChatIdPool:
         all_accounts = getattr(pool, "accounts", []) or []
 
         # 只对有 token + 状态 valid 的账号预热
-        valid = [a for a in all_accounts if getattr(a, "token", "") and getattr(a, "status_code", "valid") == "valid"]
+        valid = [
+            a
+            for a in all_accounts
+            if getattr(a, "token", "") and getattr(a, "status_code", "valid") == "valid"
+        ]
 
         for acc in valid:
             async with self._lock:
@@ -147,6 +160,8 @@ class ChatIdPool:
             # 每轮每账号最多补 1 个，避免突发 API 压力
             if deficit > 0:
                 await self._prewarm_one(acc, self._default_model)
+                # 随机暂停
+                await asyncio.sleep(random.uniform(2, 8))
 
     async def invalidate(self, email: str, chat_id: str) -> None:
         """标记某个 chat_id 为坏的——从池里移除，防止下次又被取到。
