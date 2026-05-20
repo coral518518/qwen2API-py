@@ -410,82 +410,7 @@ class _EmailSession:
         return email
 
     def poll_verify_link(self, email: str, timeout_sec: int = 300) -> str:
-        email = str(email or "").strip().lower()
-        log.info(f"[MailSession] Polling inbox for {email} (timeout {timeout_sec}s)...")
-        deadline = time.time() + timeout_sec
-        attempt = 0
-        while time.time() < deadline:
-            attempt += 1
-            try:
-                if not self._refresh_mailbox_token(email):
-                    if not self._ensure_token():
-                        time.sleep(2)
-                        continue
 
-                resp = self._session.get(
-                    f"{MAIL_BASE}/api/emails",
-                    params={"email": email},
-                    headers={
-                        "accept": "*/*",
-                        "referer": f"{MAIL_BASE}/{email}",
-                        "x-inbox-token": self._current_token,
-                    },
-                    timeout=15,
-                )
-
-                if resp.status_code in (401, 403):
-                    try:
-                        data = resp.json()
-                    except Exception:
-                        data = {}
-                    if data.get("auth"):
-                        self._set_auth(data.get("auth", {}))
-                        resp = self._session.get(
-                            f"{MAIL_BASE}/api/emails",
-                            params={"email": email},
-                            headers={
-                                "accept": "*/*",
-                                "referer": f"{MAIL_BASE}/{email}",
-                                "x-inbox-token": self._current_token,
-                            },
-                            timeout=15,
-                        )
-                    elif not self._refresh_mailbox_token(email):
-                        time.sleep(2)
-                        continue
-                    else:
-                        resp = self._session.get(
-                            f"{MAIL_BASE}/api/emails",
-                            params={"email": email},
-                            headers={
-                                "accept": "*/*",
-                                "referer": f"{MAIL_BASE}/{email}",
-                                "x-inbox-token": self._current_token,
-                            },
-                            timeout=15,
-                        )
-
-                if resp.status_code == 200:
-                    data = resp.json()
-                    if data.get("auth"):
-                        self._set_auth(data.get("auth", {}))
-                    emails_list = data.get("data", {}).get("emails", [])
-                    log.info(
-                        f"[邮件] 第 {attempt} 次轮询，收到 {len(emails_list)} 封邮件"
-                    )
-                    for msg in emails_list:
-                        link = self._extract_verify_link_from_email_record(msg)
-                        if link:
-                            log.info(f"[邮件] 找到验证链接：{link[:160]}...")
-                            return link
-                else:
-                    log.warning(
-                        f"[MailSession] email API HTTP {resp.status_code}: {resp.text[:120]}"
-                    )
-            except Exception as e:
-                log.warning(f"[MailSession] poll error: {e}")
-            time.sleep(2)
-        log.error("[邮件] 轮询超时，未找到验证邮件")
         return ""
 
 
@@ -1002,7 +927,7 @@ class AuthResolver:
             else:
                 log.warning(f"[自愈] {acc.email} Token 刷新失败，尝试激活")
 
-            activated = await activate_account(acc)
+            activated = False  # await activate_account(acc)
             if activated:
                 acc.activation_pending = False
                 acc.valid = True

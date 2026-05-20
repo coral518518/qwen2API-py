@@ -129,8 +129,9 @@ class ChatIdPool:
 
     async def _refill_loop(self) -> None:
         """定期轮询：每账号池低于 target 则补位。3000 秒一轮。"""
-        interval = 3000.0
+        interval = 6000.0
         # 初始化立即跑一轮
+        print("[ChatIdPool] 正在预热账号池，请稍候...")
         await asyncio.sleep(8.0)
         while not self._shutdown:
             try:

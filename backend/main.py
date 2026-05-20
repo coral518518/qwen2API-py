@@ -78,6 +78,7 @@ async def lifespan(app: FastAPI):
         app.state.session_locks = SessionLockRegistry()
 
         # 加载账号并启动后台清理任务
+        asyncio.create_task(auto_sync_loop(app.state.account_pool))
         await app.state.account_pool.load()
         await app.state.file_store.load()
         await app.state.session_affinity.load()
@@ -98,8 +99,6 @@ async def lifespan(app: FastAPI):
             app.state.chat_id_pool
         )  # 让 executor 直接访问
         await app.state.chat_id_pool.start()
-
-        asyncio.create_task(auto_sync_loop(app.state.account_pool))
 
     yield
 
