@@ -918,6 +918,8 @@ class AuthResolver:
             if ok:
                 if not getattr(acc, "activation_pending", False):
                     acc.valid = True
+                    acc.status_code = "valid"  # ✅ 重置状态码为有效
+                    acc.consecutive_failures = 0  # 清空失败计数
                     await self.pool.save()
                     log.info(f"[自愈] {acc.email} Token 刷新成功，已标记有效")
                     return
@@ -931,6 +933,7 @@ class AuthResolver:
             if activated:
                 acc.activation_pending = False
                 acc.valid = True
+                acc.status_code = "valid"  # ✅ 重置状态码
                 await self.pool.save()
                 log.info(f"[自愈] {acc.email} 激活成功，已保存")
             else:
@@ -955,6 +958,8 @@ class AuthResolver:
                 old_prefix = acc.token[:20] if acc.token else "空"
                 acc.token = new_token
                 acc.valid = True
+                acc.status_code = "valid"  # ✅ 重置状态码为有效
+                acc.consecutive_failures = 0  # 清空失败计数
                 await self.pool.save()
                 log.info(
                     f"[Refresh] {acc.email} token 已更新 ({old_prefix}... → {new_token[:20]}...)"
@@ -963,7 +968,10 @@ class AuthResolver:
             elif new_token == acc.token:
                 # Token same but might still be valid — mark valid again
                 acc.valid = True
+                acc.status_code = "valid"  # ✅ 重置状态码
+                acc.consecutive_failures = 0
                 log.info(f"[Refresh] {acc.email} token 未变化，重新标记有效")
+                await self.pool.save()  # ✅ 保存状态
                 return True
             else:
                 log.warning(f"[Refresh] {acc.email} 登录后未获取到token")

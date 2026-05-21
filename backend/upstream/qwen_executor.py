@@ -302,10 +302,10 @@ class QwenExecutor:
                 elif (
                     "429" in err_msg or "rate limit" in err_msg or "too many" in err_msg
                 ):
-                    self.account_pool.mark_rate_limited(acc)
+                    await self.account_pool.mark_rate_limited_async(acc)
                     exclude.add(acc.email)
                 elif "unauthorized" in err_msg or "401" in err_msg or "403" in err_msg:
-                    self.account_pool.mark_invalid(acc)
+                    await self.account_pool.mark_invalid_async(acc, reason="auth_error", error_message=err_msg)
                     exclude.add(acc.email)
                     if "activation" in err_msg or "pending" in err_msg:
                         acc.activation_pending = True

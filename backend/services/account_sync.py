@@ -28,6 +28,8 @@ async def do_sync_accounts(pool: AccountPool):
 
                     if email in existing_map:
                         acc = existing_map[email]
+                        
+                        # ✅ 优先级1: 更新凭证（总是需要的）
                         if "password" in d:
                             acc.password = d["password"]
                         if "token" in d:
@@ -36,12 +38,24 @@ async def do_sync_accounts(pool: AccountPool):
                             acc.cookies = d["cookies"]
                         if "username" in d:
                             acc.username = d["username"]
-                        if "status_code" in d:
-                            acc.status_code = d["status_code"]
-                        if "activation_pending" in d:
-                            acc.activation_pending = d["activation_pending"]
-                            if d["activation_pending"]:
-                                acc.valid = False
+                        
+                        # ✅ 优先级2: 谨慎更新状态（防止覆盖正在修复的账号）
+                        # 只有在账号不是处于"修复中"状态时，才覆盖status和valid
+                        if not getattr(acc, "healing", False):
+                            if "status_code" in d:
+                                acc.status_code = d["status_code"]
+                            
+                            if "activation_pending" in d:
+                                acc.activation_pending = d["activation_pending"]
+                                if d["activation_pending"]:
+                                    acc.valid = False
+                            elif acc.status_code not in ("rate_limited", "invalid"):
+                                # 远端没有标记为失效，则标记为有效
+                                acc.valid = True
+                                acc.activation_pending = False
+                        else:
+                            log.info(f"[Account Sync] 跳过更新状态: {acc.email} 正在自愈中")
+                        
                         updated_count += 1
                     else:
                         pool.accounts.append(Account(**d))

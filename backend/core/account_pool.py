@@ -106,14 +106,45 @@ class AccountPool:
         self._lock = asyncio.Lock()
         self._waiters: list[asyncio.Event] = []
         self._sticky_email: Optional[str] = None
+        self._last_save_time = 0.0  # 防抖控制: 上次保存的时间戳
+        self._save_debounce_sec = 1.0  # 最多每1秒保存一次
+        self._pending_save = False  # 标记是否有待保存的改动
 
     async def load(self):
         data = await self.db.load()
         self.accounts = [Account(**d) for d in data] if isinstance(data, list) else []
         log.info(f"Loaded {len(self.accounts)} upstream account(s)")
+        # 启动后台定期保存任务
+        asyncio.create_task(self._periodic_save_loop())
+
+    async def _periodic_save_loop(self):
+        """后台任务: 定期检查并保存待保存的改动，防止改动丢失"""
+        try:
+            while True:
+                await asyncio.sleep(2.0)  # 每2秒检查一次
+                if self._pending_save:
+                    await self.save()
+                    log.debug("[账号池] 后台保存任务已持久化待保存改动")
+        except asyncio.CancelledError:
+            # 应用关闭时可能被取消
+            if self._pending_save:
+                await self.save()
+            log.info("[账号池] 后台保存任务已停止")
 
     async def save(self):
         await self.db.save([a.to_dict() for a in self.accounts])
+        self._last_save_time = time.time()
+        self._pending_save = False
+
+    async def save_debounced(self):
+        """防抖保存: 避免频繁磁盘写入，最多每1秒保存一次"""
+        now = time.time()
+        if now - self._last_save_time >= self._save_debounce_sec:
+            # 距上次保存超过1秒，立即保存
+            await self.save()
+        else:
+            # 标记待保存，让后续的调用合并
+            self._pending_save = True
 
     async def add(self, account: Account):
         async with self._lock:
@@ -233,6 +264,11 @@ class AccountPool:
             self._sticky_email = None
         log.warning(f"[账号] {acc.email} 已标记为不可用，状态={acc.status_code}")
 
+    async def mark_invalid_async(self, acc: Account, reason: str = "invalid", error_message: str = ""):
+        """异步版本: 更新状态并异步持久化（防抖1秒）"""
+        self.mark_invalid(acc, reason, error_message)
+        await self.save_debounced()
+
     def mark_success(self, acc: Account):
         acc.consecutive_failures = 0
         acc.rate_limit_strikes = 0
@@ -240,6 +276,11 @@ class AccountPool:
             acc.status_code = "valid"
         if not acc.activation_pending:
             acc.valid = True
+
+    async def mark_success_async(self, acc: Account):
+        """异步版本: 更新状态并异步持久化（防抖1秒）"""
+        self.mark_success(acc)
+        await self.save_debounced()
 
     def mark_rate_limited(self, acc: Account, cooldown: int | None = None, error_message: str = ""):
         acc.rate_limit_strikes += 1
@@ -252,6 +293,11 @@ class AccountPool:
         if self._sticky_email == acc.email:
             self._sticky_email = None
         log.warning(f"[账号] {acc.email} 已限流冷却 {dynamic} 秒")
+
+    async def mark_rate_limited_async(self, acc: Account, cooldown: int | None = None, error_message: str = ""):
+        """异步版本: 更新状态并异步持久化（防抖1秒）"""
+        self.mark_rate_limited(acc, cooldown, error_message)
+        await self.save_debounced()
 
     def status(self):
         available = [a for a in self.accounts if a.is_available()]

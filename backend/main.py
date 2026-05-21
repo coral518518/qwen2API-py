@@ -104,6 +104,11 @@ async def lifespan(app: FastAPI):
 
     with request_context(surface="shutdown"):
         log.info("正在关闭网关服务...")
+        # 关闭前强制保存账号池状态（防止改动丢失）
+        account_pool = getattr(app.state, "account_pool", None)
+        if account_pool:
+            await account_pool.save()
+            log.info("账号池状态已持久化")
         # 关闭 chat_id 池
         pool = getattr(app.state, "chat_id_pool", None)
         if pool:

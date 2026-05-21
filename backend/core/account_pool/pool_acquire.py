@@ -229,6 +229,11 @@ class AccountAcquireMixin:
             self._sticky_email = None
         log.warning(f"[账号] {acc.email} 已标记为不可用，状态={acc.status_code}")
 
+    async def mark_invalid_async(self, acc: "Account", reason: str = "invalid", error_message: str = ""):
+        """异步版本: 标记不可用并持久化"""
+        self.mark_invalid(acc, reason, error_message)
+        await self.save()
+
     def mark_success(self, acc: "Account"):
         """标记账号请求成功"""
         acc.consecutive_failures = 0
@@ -237,6 +242,11 @@ class AccountAcquireMixin:
             acc.status_code = "valid"
         if not acc.activation_pending:
             acc.valid = True
+
+    async def mark_success_async(self, acc: "Account"):
+        """异步版本: 标记成功并持久化"""
+        self.mark_success(acc)
+        await self.save()
 
     def mark_rate_limited(self, acc: "Account", cooldown: int | None = None, error_message: str = ""):
         """标记账号被限流"""
@@ -250,3 +260,8 @@ class AccountAcquireMixin:
         if self._sticky_email == acc.email:
             self._sticky_email = None
         log.warning(f"[账号] {acc.email} 已限流冷却 {dynamic} 秒")
+
+    async def mark_rate_limited_async(self, acc: "Account", cooldown: int | None = None, error_message: str = ""):
+        """异步版本: 标记限流并持久化"""
+        self.mark_rate_limited(acc, cooldown, error_message)
+        await self.save()
