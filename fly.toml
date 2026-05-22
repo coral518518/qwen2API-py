@@ -6,7 +6,7 @@ auto_start_machines = true
 auto_stop_machines = true
 force_https = true
 internal_port = 7_860
-min_machines_running = 1
+min_machines_running = 0
 processes = [ "app" ]
 
 [[vm]]
