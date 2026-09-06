@@ -12,7 +12,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	pw "github.com/playwright-community/playwright-go"
 	"hash/fnv"
 	"html"
 	"io"
@@ -34,6 +33,8 @@ import (
 	"sync"
 	"syscall"
 	"time"
+
+	pw "github.com/playwright-community/playwright-go"
 
 	"qwen2api-go/adapter"
 	apidesc "qwen2api-go/api"
@@ -1987,22 +1988,50 @@ func loadManagedAPIKeys(path string, logger *slog.Logger) map[string]bool {
 	var payload struct {
 		Keys any `json:"keys"`
 	}
-	if err := json.Unmarshal(raw, &payload); err != nil {
-		logger.Warn("failed to parse api_keys.json", "error", err)
-		return keys
-	}
-	switch v := payload.Keys.(type) {
-	case []any:
-		for _, item := range v {
-			if key := strings.TrimSpace(fmt.Sprint(item)); key != "" {
+	if err := json.Unmarshal(raw, &payload); err == nil && payload.Keys != nil {
+		switch v := payload.Keys.(type) {
+		case []any:
+			for _, item := range v {
+				if key := strings.TrimSpace(fmt.Sprint(item)); key != "" {
+					keys[key] = true
+				}
+			}
+		case string:
+			for _, key := range splitEnvList(v) {
 				keys[key] = true
 			}
 		}
-	case string:
-		for _, key := range splitEnvList(v) {
-			keys[key] = true
+		if len(keys) > 0 {
+			return keys
 		}
 	}
+
+	// Try unmarshaling as direct array: ["sk-1", "sk-2"]
+	var arr []string
+	if err := json.Unmarshal(raw, &arr); err == nil && len(arr) > 0 {
+		for _, k := range arr {
+			if key := strings.TrimSpace(k); key != "" {
+				keys[key] = true
+			}
+		}
+		if len(keys) > 0 {
+			return keys
+		}
+	}
+
+	// Fallback: parse raw plain text (newline or comma separated)
+	text := strings.TrimSpace(string(raw))
+	for _, line := range strings.Split(text, "\n") {
+		line = strings.TrimSpace(line)
+		line = strings.Trim(line, `"',`+"`")
+		for _, key := range splitEnvList(line) {
+			key = strings.TrimSpace(key)
+			if key != "" && !strings.HasPrefix(key, "{") && !strings.HasPrefix(key, "}") && !strings.HasPrefix(key, "[") && !strings.HasPrefix(key, "]") {
+				keys[key] = true
+			}
+		}
+	}
+
 	return keys
 }
 
@@ -8153,6 +8182,10 @@ func (c *QwenClient) StreamChat(ctx context.Context, token, chatID string, paylo
 							return errors.New(upstreamError)
 						}
 						logWarn(c.logger, ctx, "上游 SSE 未解析到有效 delta", "chat_id", chatID, "stream_bytes", totalBytes, "raw_tail", truncate(rawTail, 500))
+						if strings.TrimSpace(rawTail) != "" {
+							return fmt.Errorf("上游未返回有效内容: %s", truncate(rawTail, 200))
+						}
+						return errors.New("上游过早关闭连接且未返回任何内容")
 					}
 					return nil
 				}

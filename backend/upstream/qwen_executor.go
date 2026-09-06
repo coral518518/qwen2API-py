@@ -52,6 +52,21 @@ func FormatUpstreamError(obj map[string]any) string {
 	if requestID == "" {
 		requestID = "-"
 	}
+	if ret, ok := obj["ret"].([]any); ok && len(ret) > 0 {
+		var parts []string
+		for _, r := range ret {
+			if s := strings.TrimSpace(firstString(r)); s != "" {
+				parts = append(parts, s)
+			}
+		}
+		if len(parts) > 0 {
+			msg := strings.Join(parts, " | ")
+			if strings.Contains(msg, "RGV587") || strings.Contains(msg, "USER_VALIDATE") {
+				return "通义千问上游风控/滑块验证拦截 (" + msg + ")，请更换干净IP/代理，或在浏览器中登录该账号完成滑块验证"
+			}
+			return "Qwen upstream error ret=" + msg
+		}
+	}
 	if success, ok := obj["success"].(bool); ok && !success {
 		data, _ := obj["data"].(map[string]any)
 		code := firstString(data["code"], obj["code"])
