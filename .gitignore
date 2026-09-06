@@ -43,3 +43,13 @@ fix_*.py
 # local cleanup
 tests/
 docs/superpowers/
+*.tsbuildinfo
+bin/
+*.log
+nul
+.openclaw/
+claude_code_tool_stress_sandbox/
+hermes_tool_stress_sandbox*/
+openclaw_tool_stress_sandbox*/
+Hermes/
+工具链长任务ifacts/
